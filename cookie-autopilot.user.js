@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.2
+// @version      4.3
 // @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
@@ -64,7 +64,7 @@
       if (typeof PlaySound !== 'undefined') {
         if (!window.__origPlaySound) window.__origPlaySound = PlaySound;
         window.PlaySound = function (url) {
-          if (/click\d*\.mp3/i.test(String(url))) return;
+          if (/clickb?\d*\.mp3/i.test(String(url))) return;
           return window.__origPlaySound.apply(this, arguments);
         };
       }
@@ -154,7 +154,7 @@
       config: CFG
     };
 
-    console.log('[AutoPilot v4.2] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.2 已启动', '全自动模式运行中');
+    console.log('[AutoPilot v4.3] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.3 已启动', '全自动模式运行中');
   }
 })();
