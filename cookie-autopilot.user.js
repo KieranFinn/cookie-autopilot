@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Cookie AutoPilot v4
+// @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.0
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买
+// @version      4.1
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买（自动加载Cookie Monster）
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -42,6 +42,11 @@
   var bootTimer = setInterval(function () {
     if (typeof Game !== 'undefined' && Game.ready) {
       clearInterval(bootTimer);
+      // Cookie Monster 不在就自动加载（pp 数据的来源）
+      if (!window.CookieMonsterData && !window.__apCMLoading) {
+        window.__apCMLoading = true;
+        try { Game.LoadMod('https://cookiemonsterteam.github.io/CookieMonster/dist/CookieMonster.js'); } catch (e) {}
+      }
       start();
     } else if (++bootTries > 60) {
       clearInterval(bootTimer);
@@ -138,7 +143,7 @@
       config: CFG
     };
 
-    console.log('[AutoPilot v4] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4 已启动', '全自动模式运行中');
+    console.log('[AutoPilot v4.1] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.1 已启动', '全自动模式运行中');
   }
 })();
