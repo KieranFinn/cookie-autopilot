@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.3
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买+屏蔽点击音效
+// @version      4.4
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(含批量里程碑冲刺)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -112,10 +112,30 @@
             if (info.colour === 'Gray') return;
             if (info.pp > 0 && info.pp < bestPP) {
               bestPP = info.pp;
-              bestTarget = { kind: 'building', obj: b };
+              bestTarget = { kind: 'building', obj: b, amount: 1 };
               bestPrice = b.getPrice();
             }
           } catch (e) {}
+        });
+
+        // 批量购买（×10 / ×100）：平时性价比不如单买，
+        // 但跨越里程碑（50/100 座等成就+阶层升级解锁）时会成为全局最优
+        [10, 100].forEach(function (qty) {
+          var map = qty === 10 ? CMd.Objects10 : CMd.Objects100;
+          if (!map) return;
+          Object.keys(map).forEach(function (name) {
+            try {
+              var info = map[name];
+              var b = Game.Objects[name];
+              if (!info || !b || b.locked) return;
+              if (info.colour === 'Gray') return;
+              if (info.pp > 0 && info.pp < bestPP) {
+                bestPP = info.pp;
+                bestTarget = { kind: 'building', obj: b, amount: qty };
+                bestPrice = info.price;
+              }
+            } catch (e) {}
+          });
         });
 
         if (CMd.Upgrades) {
@@ -134,10 +154,10 @@
               }
             } catch (e) {}
           });
-        }
+        });
 
         if (bestTarget && bestPrice <= Game.cookies) {
-          if (bestTarget.kind === 'building') bestTarget.obj.buy(1);
+          if (bestTarget.kind === 'building') bestTarget.obj.buy(bestTarget.amount || 1);
           else bestTarget.obj.buy(true);
         }
       } catch (e) {}
@@ -154,7 +174,7 @@
       config: CFG
     };
 
-    console.log('[AutoPilot v4.3] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.3 已启动', '全自动模式运行中');
+    console.log('[AutoPilot v4.4] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.4 已启动', '全自动模式运行中');
   }
 })();
