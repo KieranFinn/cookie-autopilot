@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.1
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买（自动加载Cookie Monster）
+// @version      4.2
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -58,6 +58,17 @@
     if (window.CookieAutoPilot) { window.CookieAutoPilot.stop(); }
 
     var timers = [];
+
+    // ---------- 0. 屏蔽大饼干点击音效（其它音效保留） ----------
+    try {
+      if (typeof PlaySound !== 'undefined') {
+        if (!window.__origPlaySound) window.__origPlaySound = PlaySound;
+        window.PlaySound = function (url) {
+          if (/click\d*\.mp3/i.test(String(url))) return;
+          return window.__origPlaySound.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
 
     // ---------- 1. 自动点击大饼干 ----------
     timers.push(setInterval(function () {
@@ -143,7 +154,7 @@
       config: CFG
     };
 
-    console.log('[AutoPilot v4.1] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.1 已启动', '全自动模式运行中');
+    console.log('[AutoPilot v4.2] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.2 已启动', '全自动模式运行中');
   }
 })();
