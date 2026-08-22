@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      5.1.2
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(strict/fast双模式切换)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
+// @version      5.1.3
+// @description  Cookie Clicker 全自动：连点+金饼干+幸运签自动点击+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -12,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v5.1.2 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.3 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -23,6 +22,7 @@
  * v5.0.0：废除 pp 均值快道，改为严格全局最优（攒钱策略）
  * v5.1.0：strict / fast 双模式切换（控制台接口）
  * v5.1.1：增加屏幕右上角浮动模式切换按钮
+ * v5.1.3：增加幸运签（Fortune cookie）自动点击
  * v5.1.2：修复 PlaySound 恢复、升级 pp 实时修正、OnAscend 显式判断、
  *          开关型升级进黑名单、变量名冲突、bootTimer 清理
  * ============================================================ */
@@ -237,6 +237,12 @@
           if (shimmer && (shimmer.type === 'golden' || shimmer.type === 'reindeer') && shimmer.pop) shimmer.pop();
         }
 
+        // --- 幸运签（Fortune cookie）：ticker 带 onclick 即点 ---
+        try {
+          var tickerEl = document.getElementById('commentsText1');
+          if (tickerEl && tickerEl.onclick) tickerEl.click();
+        } catch (e) {}
+
         // --- 购买：按模式切换 ---
         var scan = scanAll();
         if (CFG.mode === 'strict') buyStrict(scan);
@@ -308,7 +314,7 @@
 
     createModeBtn();
 
-    console.log('[AutoPilot v5.1.2] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v5.1.2 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+    console.log('[AutoPilot v5.1.3] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v5.1.3 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
   }
 })();
