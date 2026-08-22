@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      5.1.1
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(strict/fast双模式切换+浮动按钮)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
+// @version      5.1.2
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(strict/fast双模式切换)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
@@ -12,7 +12,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v5.1.1 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.2 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -23,6 +23,8 @@
  * v5.0.0：废除 pp 均值快道，改为严格全局最优（攒钱策略）
  * v5.1.0：strict / fast 双模式切换（控制台接口）
  * v5.1.1：增加屏幕右上角浮动模式切换按钮
+ * v5.1.2：修复 PlaySound 恢复、升级 pp 实时修正、OnAscend 显式判断、
+ *          开关型升级进黑名单、变量名冲突、bootTimer 清理
  * ============================================================ */
 (function () {
   'use strict';
@@ -35,14 +37,18 @@
     maxBuysPerTick: 200       // fast 模式单拍连环购买上限（strict 模式忽略）
   };
 
-  // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
+  // 永远不自动购买的升级（会改变黄金饼干机制、开关型、纯亏）
   var BLACKLIST = [
     'Elder covenant',           // 永久安抚阿嬷，-5% 产量，血亏
     'Elder Pledge',             // 暂时安抚阿嬷（想手动用时自己买）
     'One mind',                 // 是否开启阿嬷浩劫由你决定
     'Communal brainsweep',
     'Elder pact',
-    'Sacrificial rolling pins'  // 降低嬤虫收益的开关型
+    'Sacrificial rolling pins', // 降低嬤虫收益的开关型
+    'Shimmering veil [off]',    // 开关型：关闭闪光面纱保护
+    'Golden switch [off]',      // 开关型：恢复黄金饼干（策略性）
+    'Golden switch [on]',       // 开关型：关闭黄金饼干换 +50% CpS（策略性）
+    'Sugar frenzy'              // 糖狂潮（一次性爆发，不宜自动）
   ];
 
   // ---------- 启动检查 ----------
@@ -148,8 +154,10 @@
             if (info.colour === 'Gray') return;
             if (BLACKLIST.indexOf(name) !== -1) return;
             var price = u.getPrice ? u.getPrice() : u.basePrice;
-            if (info.pp > 0 && isFinite(info.pp)) {
-              list.push({ target: { kind: 'upgrade', obj: u }, price: price, adj: info.pp });
+            var adj = info.pp;
+            if (info.price > 0 && price > 0) adj = info.pp * price / info.price;
+            if (adj > 0 && isFinite(adj)) {
+              list.push({ target: { kind: 'upgrade', obj: u }, price: price, adj: adj });
             }
           } catch (e) {}
         });
@@ -225,18 +233,18 @@
       try {
         // --- 黄金饼干 / 红饼干 / 驯鹿：出现即点 ---
         for (var i = 0; i < Game.shimmers.length; i++) {
-          var s = Game.shimmers[i];
-          if (s && (s.type === 'golden' || s.type === 'reindeer') && s.pop) s.pop();
+          var shimmer = Game.shimmers[i];
+          if (shimmer && (shimmer.type === 'golden' || shimmer.type === 'reindeer') && shimmer.pop) shimmer.pop();
         }
 
         // --- 购买：按模式切换 ---
-        var s = scanAll();
-        if (CFG.mode === 'strict') buyStrict(s);
-        else buyFast(s);
+        var scan = scanAll();
+        if (CFG.mode === 'strict') buyStrict(scan);
+        else buyFast(scan);
 
         // --- 嬤虫：满员轮替（v4.9.6） ---
         if (Game.wrinklers) {
-          if (Game.OnAscend) {
+          if (Game.OnAscend > 0) {
             var anyAlive = false;
             Game.wrinklers.forEach(function (w) { if (w.hp > 0) { w.hp = 0; anyAlive = true; } });
             if (anyAlive && Game.CollectWrinklers) Game.CollectWrinklers();
@@ -274,6 +282,8 @@
         if (tickTimer) clearTimeout(tickTimer);
         clearInterval(clickTimer);
         removeModeBtn();
+        if (bootTimer) clearInterval(bootTimer);
+        if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
         delete window.CookieAutoPilot;
         console.log('[AutoPilot] 已停止。');
       },
@@ -298,7 +308,7 @@
 
     createModeBtn();
 
-    console.log('[AutoPilot v5.1.1] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v5.1.1 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+    console.log('[AutoPilot v5.1.2] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v5.1.2 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
   }
 })();
