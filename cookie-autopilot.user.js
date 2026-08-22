@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.9.6
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+固定100ms节拍纯pp快道+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
+// @version      5.0.0
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(严格全局最优，攒钱等pp最低项)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,21 +11,13 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.9.6 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.0.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
- * 购买规则：adjPP ≤ 全体候选均值 → 买得起就买（pp 最小优先）；
- *           adjPP > 均值 → 排队等。均值随游戏阶段自适应。
- *           （全局最优必 ≤ 均值，故贪心纯度不损失）
- * v4.5：节奏自适应（扫货20ms×200件 / 稳态250ms×1件）
- * v4.6：连环购买用实时价格修正 pp
- * v4.9：pp 均值阈值快道（取代纯贪心的死等）
- * v4.9.2：扫货/稳态改为"失衡驱动"——存在 adjPP≤均值 且买得起的候选才全速
- * v4.9.3：嬤虫改为 n² 囤积引擎——常态满员不捏、差钱捏最肥的、飞升前全捏
- * v4.9.4：删除扫货/稳态模式系统——固定 100ms 节拍，每拍连环买光合格候选
- * v4.9.5：删除零钱扫货——所有购买 100% 走 pp 快道，不再有不看 pp 的通道
- * v4.9.6：嬤虫改为满员轮替——满员只捏最肥的一只，删除差钱补差额逻辑
+ * 购买规则：严格全局最优 —— 只买当前全体候选中修正 pp 最低的那一项；
+ *           买不起就什么都不买，纯攒钱等。
+ * v5.0.0：废除 pp 均值快道，改为严格全局最优（攒钱策略）
  * ============================================================ */
 (function () {
   'use strict';
@@ -33,8 +25,7 @@
   // ---------- 配置区 ----------
   var CFG = {
     clickIntervalMs: 4,      // 大饼干点击间隔（毫秒），浏览器最小钳制约 4ms
-    tickMs: 100,             // 主循环固定节拍（游戏 33ms/帧结算，100ms 是利用率甜点位）
-    maxBuysPerTick: 200      // 单拍连环购买上限
+    tickMs: 100              // 主循环固定节拍（游戏 33ms/帧结算，100ms 是利用率甜点位）
   };
 
   // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
@@ -91,17 +82,14 @@
     }, CFG.clickIntervalMs);
 
     // ---------- 2. 购买记录（stats 用） ----------
-    // v4.9.4：模式系统已删除。节奏由购买循环自然形成——
-    // 有合格候选就一拍打光，没有就空扫一拍，无需人为分档。
     function noteBuy() {
       buyTimes.push(Date.now());
       if (buyTimes.length > 200) buyTimes.splice(0, buyTimes.length - 200);
     }
 
-    // ---------- 3. 候选扫描：全体候选 + pp 均值 ----------
-    // 关键：pp 用实时价格修正。pp ≈ 价格/产量增益，增益短期不变，
-    // 故 修正pp = CM的pp × (实时价格 / CM记录价格)。
-    // 返回按修正pp升序的候选列表 + 全体均值（快道阈值）。
+    // ---------- 3. 候选扫描：全体候选，按修正 pp 升序 ----------
+    // pp 用实时价格修正。修正pp = CM的pp × (实时价格 / CM记录价格)。
+    // 返回按修正pp升序的候选列表（不含均值）。
     function scanAll() {
       var CMd = window.CookieMonsterData;
       if (!CMd || !CMd.Objects1) return null;
@@ -160,10 +148,8 @@
       }
 
       if (!list.length) return null;
-      var sum = 0;
-      for (var i = 0; i < list.length; i++) sum += list[i].adj;
       list.sort(function (a, b) { return a.adj - b.adj; });
-      return { list: list, mean: sum / list.length };
+      return { list: list };
     }
 
     function doBuy(c) {
@@ -182,20 +168,14 @@
           if (s && (s.type === 'golden' || s.type === 'reindeer') && s.pop) s.pop();
         }
 
-        // --- 购买：pp 均值快道（v4.9.4 无模式，每拍尽力买） ---
-        // 每拍连环买：adjPP ≤ 均值且买得起的最优项 → 涨价修正后再扫 → 再买，
-        // 直到没有合格候选或单拍 200 件封顶。有活一拍打光，无活空扫一拍。
-        for (var k = 0; k < CFG.maxBuysPerTick; k++) {
-          var s = scanAll();
-          if (!s) break;
-          var pick = null;
-          for (var j = 0; j < s.list.length; j++) {
-            var c = s.list[j];
-            if (c.adj > s.mean) break; // 列表按 pp 升序，超过均值即止
-            if (c.price <= Game.cookies) { pick = c; break; }
+        // --- 购买：严格全局最优（v5.0.0） ---
+        // 每拍只买一件：全体候选中修正 pp 最低者，买得起就买，买不起就等。
+        var s = scanAll();
+        if (s && s.list.length > 0) {
+          var best = s.list[0];
+          if (best.price <= Game.cookies) {
+            doBuy(best);
           }
-          if (!pick) break;
-          doBuy(pick);
         }
 
         // --- 嬤虫：满员轮替（v4.9.6） ---
@@ -252,7 +232,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.9.6] 已启动 ✔ 纯pp快道购买+固定100ms节拍+嬤虫满员轮替 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.9.6 已启动', '嬤虫满员轮替：满员只捏最肥的一只，飞升前全捏');
+    console.log('[AutoPilot v5.0.0] 已启动 ✔ 严格全局最优购买+固定100ms节拍+嬤虫满员轮替 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v5.0.0 已启动', '严格全局最优：只买 pp 最低项，买不起就攒钱等');
   }
 })();
