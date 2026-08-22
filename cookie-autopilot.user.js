@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      5.1.5
+// @version      5.1.6
 // @description  Cookie Clicker 全自动：连点+金饼干+红饼干+幸运签自动点击+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v5.1.5 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.6 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -19,6 +19,7 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.1.6：修复 CollectWrinklers() 误杀所有虫（它实际是"杀死全部"不是"收集死虫"）
  * v5.1.5：buyTimes 环形缓冲区、Fortune 单双引号兼容、scanAll 缓存、
  *          Notify 异常防护、变量名去重
  * v5.1.4：修复 Fortune 检测（查两个 ticker + class="fortune"）、增加红饼干（wrath）自动点击
@@ -296,7 +297,8 @@
               });
               if (fattest && fattest.sucked > 0) {
                 fattest.hp = 0;
-                if (Game.CollectWrinklers) Game.CollectWrinklers();
+                // 注意：Game.CollectWrinklers() 会杀死所有虫，不是只收集死虫。
+                // 单只虫 hp=0 后游戏会自动爆裂并返还饼干，不需要额外调用。
               }
             }
           }
@@ -348,9 +350,9 @@
 
     createModeBtn();
 
-    console.log('[AutoPilot v5.1.5] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
+    console.log('[AutoPilot v5.1.6] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.1.5 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+      if (Game.Notify) Game.Notify('AutoPilot v5.1.6 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
     } catch (e) {}
   }
 })();
