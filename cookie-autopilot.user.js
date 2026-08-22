@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.5
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买+购买节奏自适应(扫货/稳态)+屏蔽点击音效
+// @version      4.6
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时价格修正)+节奏自适应+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,13 +11,15 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.5 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.6 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
  * v4.5：购买节奏自适应——连续购买（间隔≤5s）时进入扫货模式
  *       （20ms/拍 + 单拍最多买200件），购买停顿5s以上回落稳态
  *       （250ms/拍 + 单拍1件）；大件永远 pp 最优优先。
+ * v4.6：连环购买时用实时价格修正 pp（CM 数据约1秒一刷，
+ *       建筑每买一座涨15%，修正后排名自动轮换到真实次优）。
  * ============================================================ */
 (function () {
   'use strict';
@@ -102,6 +104,9 @@
     }
 
     // ---------- 3. 候选扫描：pp 最优目标 ----------
+    // 关键：pp 用实时价格修正。pp ≈ 价格/产量增益，增益短期不变，
+    // 故 修正pp = CM的pp × (实时价格 / CM记录价格)。
+    // 连环购买时建筑已涨价，修正后排名自动掉队、轮换到真实次优。
     function scanBest() {
       var CMd = window.CookieMonsterData;
       if (!CMd || !CMd.Objects1) return null;
@@ -114,10 +119,13 @@
           var b = Game.Objects[name];
           if (!info || !b || b.locked) return;
           if (info.colour === 'Gray') return;
-          if (info.pp > 0 && info.pp < bestPP) {
-            bestPP = info.pp;
+          var liveP = b.getPrice();
+          var adj = info.pp;
+          if (info.price > 0 && liveP > 0) adj = info.pp * liveP / info.price;
+          if (adj > 0 && adj < bestPP) {
+            bestPP = adj;
             bestTarget = { kind: 'building', obj: b, amount: 1 };
-            bestPrice = b.getPrice();
+            bestPrice = liveP;
           }
         } catch (e) {}
       });
@@ -132,10 +140,13 @@
             var b = Game.Objects[name];
             if (!info || !b || b.locked) return;
             if (info.colour === 'Gray') return;
-            if (info.pp > 0 && info.pp < bestPP) {
-              bestPP = info.pp;
+            var liveP = b.getSumPrice ? b.getSumPrice(qty) : info.price;
+            var adj = info.pp;
+            if (info.price > 0 && liveP > 0) adj = info.pp * liveP / info.price;
+            if (adj > 0 && adj < bestPP) {
+              bestPP = adj;
               bestTarget = { kind: 'building', obj: b, amount: qty };
-              bestPrice = info.price;
+              bestPrice = liveP;
             }
           } catch (e) {}
         });
@@ -277,7 +288,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.5] 已启动 ✔ 节奏自适应（扫货20ms/稳态250ms） 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.5 已启动', '购买节奏自适应模式运行中');
+    console.log('[AutoPilot v4.6] 已启动 ✔ 节奏自适应+实时价格修正pp 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.6 已启动', '节奏自适应+pp实时修正运行中');
   }
 })();
