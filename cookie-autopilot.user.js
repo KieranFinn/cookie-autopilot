@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.9
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+节奏自适应+屏蔽点击音效
+// @version      4.9.1
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+节奏自适应(已修复卡死)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.9 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.9.1 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -21,6 +21,8 @@
  * v4.5：节奏自适应（扫货20ms×200件 / 稳态250ms×1件）
  * v4.6：连环购买用实时价格修正 pp
  * v4.9：pp 均值阈值快道（取代纯贪心的死等）
+ * v4.9.1：修复模式判断时间锚点——以"最后一笔购买距现在"为准，
+ *         否则密集购买结束后永久卡在扫货模式空转烧 CPU
  * ============================================================ */
 (function () {
   'use strict';
@@ -91,12 +93,14 @@
     }, CFG.clickIntervalMs);
 
     // ---------- 2. 模式判断 ----------
-    // 扫货：启动时默认进入；最近两次购买间隔 ≤5s 保持
-    // 稳态：购买停顿 >5s 后回落，再次出现密集购买自动回到扫货
+    // 扫货：启动时默认进入；最近一次购买距现在 ≤5s 保持
+    // 稳态：超过 5s 没有购买 → 回落；再次出现购买立即回到扫货
+    // （v4.9.1 修复：时间锚点必须是"现在"，不能是"倒数第二笔"，
+    //   否则密集购买结束后永远卡在扫货模式空转烧 CPU）
     function currentMode() {
       var n = buyTimes.length;
-      if (n < 2) return 'sweep';
-      return (buyTimes[n - 1] - buyTimes[n - 2] <= CFG.sweepGapMs) ? 'sweep' : 'steady';
+      if (n < 1) return 'sweep';
+      return (Date.now() - buyTimes[n - 1] <= CFG.sweepGapMs) ? 'sweep' : 'steady';
     }
 
     function noteBuy() {
@@ -163,7 +167,7 @@
             }
           } catch (e) {}
         });
-      }
+      });
 
       if (!list.length) return null;
       var sum = 0;
@@ -296,7 +300,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.9] 已启动 ✔ pp均值快道+节奏自适应 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.9 已启动', 'pp均值快道+节奏自适应运行中');
+    console.log('[AutoPilot v4.9.1] 已启动 ✔ pp均值快道+节奏自适应 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.9.1 已启动', 'pp均值快道+节奏自适应运行中');
   }
 })();
