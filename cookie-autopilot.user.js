@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.9.5
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+固定100ms节拍纯pp快道+嬤虫囤积引擎(满员不捏,飞升前全捏)+屏蔽点击音效
+// @version      4.9.6
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+固定100ms节拍纯pp快道+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.9.5 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.9.6 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -25,6 +25,7 @@
  * v4.9.3：嬤虫改为 n² 囤积引擎——常态满员不捏、差钱捏最肥的、飞升前全捏
  * v4.9.4：删除扫货/稳态模式系统——固定 100ms 节拍，每拍连环买光合格候选
  * v4.9.5：删除零钱扫货——所有购买 100% 走 pp 快道，不再有不看 pp 的通道
+ * v4.9.6：嬤虫改为满员轮替——满员只捏最肥的一只，删除差钱补差额逻辑
  * ============================================================ */
 (function () {
   'use strict';
@@ -184,12 +185,9 @@
         // --- 购买：pp 均值快道（v4.9.4 无模式，每拍尽力买） ---
         // 每拍连环买：adjPP ≤ 均值且买得起的最优项 → 涨价修正后再扫 → 再买，
         // 直到没有合格候选或单拍 200 件封顶。有活一拍打光，无活空扫一拍。
-        var bought = 0;
-        var lastScan = null;
         for (var k = 0; k < CFG.maxBuysPerTick; k++) {
           var s = scanAll();
           if (!s) break;
-          lastScan = s;
           var pick = null;
           for (var j = 0; j < s.list.length; j++) {
             var c = s.list[j];
@@ -198,35 +196,29 @@
           }
           if (!pick) break;
           doBuy(pick);
-          bought++;
         }
 
-        // --- 嬤虫：n² 囤积引擎（v4.9.3） ---
-        // 常态满员不捏（囤积速率 = 5% × 在场虫数，满员引擎最强，上限跟随
-        // Game.getWrinklersMax()，买加虫位升级后自动兼容 12/14 只）；
-        // 本拍没买到东西且最优快道候选差钱时：若囤积返还够补差额，
-        // 从最肥的非闪光虫开始捏到够买（捏爆返还在吸附时已锁定，无 buff 时机问题）；
-        // 飞升面板打开时全捏（囤积跨飞升清零），含闪光虫。
+        // --- 嬤虫：满员轮替（v4.9.6） ---
+        // 满员时只捏最肥的一只（腾出虫位让新虫进场，其余保持满转速 n² 囤积，
+        // 虫位上限跟随 Game.getWrinklersMax()）；闪光虫留到飞升前；
+        // 飞升面板打开时全捏（囤积跨飞升清零）。
         if (Game.wrinklers) {
           if (Game.OnAscend) {
             var anyAlive = false;
             Game.wrinklers.forEach(function (w) { if (w.hp > 0) { w.hp = 0; anyAlive = true; } });
             if (anyAlive && Game.CollectWrinklers) Game.CollectWrinklers();
-          } else if (bought === 0 && lastScan) {
-            var target = null;
-            for (var ti = 0; ti < lastScan.list.length; ti++) {
-              if (lastScan.list[ti].adj <= lastScan.mean) { target = lastScan.list[ti]; break; }
-            }
-            if (target && target.price > Game.cookies) {
-              var poppable = Game.wrinklers.filter(function (w) { return w.hp > 0 && w.sucked > 0 && !w.type; });
-              poppable.sort(function (a, b) { return b.sucked - a.sucked; });
-              var totalReturn = 0;
-              poppable.forEach(function (w) { totalReturn += w.sucked * 1.1; });
-              if (totalReturn >= target.price - Game.cookies) {
-                for (var pi = 0; pi < poppable.length && Game.cookies < target.price; pi++) {
-                  poppable[pi].hp = 0;
-                  if (Game.CollectWrinklers) Game.CollectWrinklers();
-                }
+          } else {
+            var alive = Game.wrinklers.filter(function (w) { return w.hp > 0; });
+            var wmax = Game.getWrinklersMax ? Game.getWrinklersMax() : 10;
+            if (alive.length >= wmax) {
+              var fattest = null;
+              alive.forEach(function (w) {
+                if (w.type) return; // 闪光虫豁免，留到飞升
+                if (!fattest || w.sucked > fattest.sucked) fattest = w;
+              });
+              if (fattest && fattest.sucked > 0) {
+                fattest.hp = 0;
+                if (Game.CollectWrinklers) Game.CollectWrinklers();
               }
             }
           }
@@ -260,7 +252,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.9.5] 已启动 ✔ 纯pp快道购买+固定100ms节拍+嬤虫囤积引擎 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.9.5 已启动', '零钱扫货已删除：所有购买 100% 按 pp 快道执行');
+    console.log('[AutoPilot v4.9.6] 已启动 ✔ 纯pp快道购买+固定100ms节拍+嬤虫满员轮替 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.9.6 已启动', '嬤虫满员轮替：满员只捏最肥的一只，飞升前全捏');
   }
 })();
