@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.7
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+钱不闲置)+节奏自适应+屏蔽点击音效
+// @version      4.9
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+节奏自适应+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,17 +11,16 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.7 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.9 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
- * v4.5：购买节奏自适应——连续购买（间隔≤5s）时进入扫货模式
- *       （20ms/拍 + 单拍最多买200件），购买停顿5s以上回落稳态
- *       （250ms/拍 + 单拍1件）；大件永远 pp 最优优先。
- * v4.6：连环购买时用实时价格修正 pp（CM 数据约1秒一刷，
- *       建筑每买一座涨15%，修正后排名自动轮换到真实次优）。
- * v4.7：钱不许闲置——全局最优买不起时，若等待>30秒则改买
- *       "买得起的最优"；等待≤30秒才憋着等（含爆发期收入加成）。
+ * 购买规则：adjPP ≤ 全体候选均值 → 买得起就买（pp 最小优先）；
+ *           adjPP > 均值 → 排队等。均值随游戏阶段自适应。
+ *           （全局最优必 ≤ 均值，故贪心纯度不损失）
+ * v4.5：节奏自适应（扫货20ms×200件 / 稳态250ms×1件）
+ * v4.6：连环购买用实时价格修正 pp
+ * v4.9：pp 均值阈值快道（取代纯贪心的死等）
  * ============================================================ */
 (function () {
   'use strict';
@@ -35,8 +34,7 @@
     sweepGapMs: 5000,        // 最近两次购买间隔超过此值 → 回落稳态
     maxSweepBuys: 200,       // 扫货模式单拍购买上限
     sweepPriceRatio: 0.001,  // 零钱线：单价 ≤ 存款 × 此比例才算扫货对象
-    sweepBudgetRatio: 0.02,  // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
-    holdSeconds: 30          // 全局最优预计等待 ≤ 此秒数才憋着等，否则买"买得起的最优"
+    sweepBudgetRatio: 0.02   // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
   };
 
   // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
@@ -106,16 +104,15 @@
       if (buyTimes.length > 200) buyTimes.splice(0, buyTimes.length - 200);
     }
 
-    // ---------- 3. 候选扫描：pp 最优目标 ----------
+    // ---------- 3. 候选扫描：全体候选 + pp 均值 ----------
     // 关键：pp 用实时价格修正。pp ≈ 价格/产量增益，增益短期不变，
     // 故 修正pp = CM的pp × (实时价格 / CM记录价格)。
-    // 连环购买时建筑已涨价，修正后排名自动掉队、轮换到真实次优。
-    function scanBest() {
+    // 返回按修正pp升序的候选列表 + 全体均值（快道阈值）。
+    function scanAll() {
       var CMd = window.CookieMonsterData;
       if (!CMd || !CMd.Objects1) return null;
 
-      var bestTarget = null, bestPP = Infinity, bestPrice = 0;
-      var affordTarget = null, affordPP = Infinity, affordPrice = 0;
+      var list = [];
 
       Object.keys(CMd.Objects1).forEach(function (name) {
         try {
@@ -126,15 +123,8 @@
           var liveP = b.getPrice();
           var adj = info.pp;
           if (info.price > 0 && liveP > 0) adj = info.pp * liveP / info.price;
-          if (adj > 0 && adj < bestPP) {
-            bestPP = adj;
-            bestTarget = { kind: 'building', obj: b, amount: 1 };
-            bestPrice = liveP;
-          }
-          if (adj > 0 && liveP <= Game.cookies && adj < affordPP) {
-            affordPP = adj;
-            affordTarget = { kind: 'building', obj: b, amount: 1 };
-            affordPrice = liveP;
+          if (adj > 0 && isFinite(adj)) {
+            list.push({ target: { kind: 'building', obj: b, amount: 1 }, price: liveP, adj: adj });
           }
         } catch (e) {}
       });
@@ -152,15 +142,8 @@
             var liveP = b.getSumPrice ? b.getSumPrice(qty) : info.price;
             var adj = info.pp;
             if (info.price > 0 && liveP > 0) adj = info.pp * liveP / info.price;
-            if (adj > 0 && adj < bestPP) {
-              bestPP = adj;
-              bestTarget = { kind: 'building', obj: b, amount: qty };
-              bestPrice = liveP;
-            }
-            if (adj > 0 && liveP <= Game.cookies && adj < affordPP) {
-              affordPP = adj;
-              affordTarget = { kind: 'building', obj: b, amount: qty };
-              affordPrice = liveP;
+            if (adj > 0 && isFinite(adj)) {
+              list.push({ target: { kind: 'building', obj: b, amount: qty }, price: liveP, adj: adj });
             }
           } catch (e) {}
         });
@@ -175,36 +158,23 @@
             if (info.colour === 'Gray') return;
             if (BLACKLIST.indexOf(name) !== -1) return;
             var price = u.getPrice ? u.getPrice() : u.basePrice;
-            if (info.pp > 0 && info.pp < bestPP) {
-              bestPP = info.pp;
-              bestTarget = { kind: 'upgrade', obj: u };
-              bestPrice = price;
-            }
-            if (info.pp > 0 && price <= Game.cookies && info.pp < affordPP) {
-              affordPP = info.pp;
-              affordTarget = { kind: 'upgrade', obj: u };
-              affordPrice = price;
+            if (info.pp > 0 && isFinite(info.pp)) {
+              list.push({ target: { kind: 'upgrade', obj: u }, price: price, adj: info.pp });
             }
           } catch (e) {}
         });
       }
 
-      var g = bestTarget ? { target: bestTarget, price: bestPrice } : null;
-      var a = affordTarget ? { target: affordTarget, price: affordPrice } : null;
-      return { global: g, affordable: a };
+      if (!list.length) return null;
+      var sum = 0;
+      for (var i = 0; i < list.length; i++) sum += list[i].adj;
+      list.sort(function (a, b) { return a.adj - b.adj; });
+      return { list: list, mean: sum / list.length };
     }
 
-    // 当前收入速率：CpS + 连点收入（含狂热等 buff，因为读的都是实时值）
-    function incomeRate() {
-      var cps = Game.cookiesPs || 0;
-      var click = (Game.computedMouseCps || 0) * (1000 / CFG.clickIntervalMs);
-      var r = cps + click;
-      return r > 0 ? r : 1;
-    }
-
-    function doBuy(best) {
-      if (best.target.kind === 'building') best.target.obj.buy(best.target.amount || 1);
-      else best.target.obj.buy(true);
+    function doBuy(c) {
+      if (c.target.kind === 'building') c.target.obj.buy(c.target.amount || 1);
+      else c.target.obj.buy(true);
       noteBuy();
     }
 
@@ -277,22 +247,20 @@
           }
         }
 
-        // --- 购买：扫货模式单拍最多 maxSweepBuys 件，稳态 1 件 ---
-        // v4.7 决策：全局最优买得起→买；买不起且等待≤30s→憋着；
-        // 等待>30s→改买买得起的最优（钱不许闲置）
+        // --- 购买：pp 均值快道 ---
+        // adjPP ≤ 均值且买得起 → 按 pp 从小到大买；否则等。
+        // 扫货模式单拍最多 maxSweepBuys 件，稳态 1 件。
         var maxBuys = currentMode() === 'sweep' ? CFG.maxSweepBuys : 1;
         for (var k = 0; k < maxBuys; k++) {
-          var s = scanBest();
-          if (!s || !s.global) break;
+          var s = scanAll();
+          if (!s) break;
           var pick = null;
-          if (s.global.price <= Game.cookies) {
-            pick = s.global;
-          } else {
-            var waitSec = (s.global.price - Game.cookies) / incomeRate();
-            if (waitSec <= CFG.holdSeconds) break; // 近在咫尺，等
-            pick = s.affordable; // 等不起，让钱去干活
-            if (!pick) break;
+          for (var j = 0; j < s.list.length; j++) {
+            var c = s.list[j];
+            if (c.adj > s.mean) break; // 列表按 pp 升序，超过均值即止
+            if (c.price <= Game.cookies) { pick = c; break; }
           }
+          if (!pick) break;
           doBuy(pick);
         }
 
@@ -328,7 +296,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.7] 已启动 ✔ 节奏自适应+钱不闲置 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.7 已启动', '节奏自适应+钱不闲置模式运行中');
+    console.log('[AutoPilot v4.9] 已启动 ✔ pp均值快道+节奏自适应 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.9 已启动', 'pp均值快道+节奏自适应运行中');
   }
 })();
