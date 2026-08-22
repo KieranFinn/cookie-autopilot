@@ -10,7 +10,6 @@
 // @updateURL    https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
-
 /* ============================================================
  * Cookie AutoPilot v4 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
@@ -154,7 +153,7 @@
               }
             } catch (e) {}
           });
-        });
+        }
 
         if (bestTarget && bestPrice <= Game.cookies) {
           if (bestTarget.kind === 'building') bestTarget.obj.buy(bestTarget.amount || 1);
