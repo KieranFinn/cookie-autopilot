@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.6
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时价格修正)+节奏自适应+屏蔽点击音效
+// @version      4.7
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+钱不闲置)+节奏自适应+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.6 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.7 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -20,6 +20,8 @@
  *       （250ms/拍 + 单拍1件）；大件永远 pp 最优优先。
  * v4.6：连环购买时用实时价格修正 pp（CM 数据约1秒一刷，
  *       建筑每买一座涨15%，修正后排名自动轮换到真实次优）。
+ * v4.7：钱不许闲置——全局最优买不起时，若等待>30秒则改买
+ *       "买得起的最优"；等待≤30秒才憋着等（含爆发期收入加成）。
  * ============================================================ */
 (function () {
   'use strict';
@@ -33,7 +35,8 @@
     sweepGapMs: 5000,        // 最近两次购买间隔超过此值 → 回落稳态
     maxSweepBuys: 200,       // 扫货模式单拍购买上限
     sweepPriceRatio: 0.001,  // 零钱线：单价 ≤ 存款 × 此比例才算扫货对象
-    sweepBudgetRatio: 0.02   // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
+    sweepBudgetRatio: 0.02,  // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
+    holdSeconds: 30          // 全局最优预计等待 ≤ 此秒数才憋着等，否则买"买得起的最优"
   };
 
   // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
@@ -112,6 +115,7 @@
       if (!CMd || !CMd.Objects1) return null;
 
       var bestTarget = null, bestPP = Infinity, bestPrice = 0;
+      var affordTarget = null, affordPP = Infinity, affordPrice = 0;
 
       Object.keys(CMd.Objects1).forEach(function (name) {
         try {
@@ -126,6 +130,11 @@
             bestPP = adj;
             bestTarget = { kind: 'building', obj: b, amount: 1 };
             bestPrice = liveP;
+          }
+          if (adj > 0 && liveP <= Game.cookies && adj < affordPP) {
+            affordPP = adj;
+            affordTarget = { kind: 'building', obj: b, amount: 1 };
+            affordPrice = liveP;
           }
         } catch (e) {}
       });
@@ -148,6 +157,11 @@
               bestTarget = { kind: 'building', obj: b, amount: qty };
               bestPrice = liveP;
             }
+            if (adj > 0 && liveP <= Game.cookies && adj < affordPP) {
+              affordPP = adj;
+              affordTarget = { kind: 'building', obj: b, amount: qty };
+              affordPrice = liveP;
+            }
           } catch (e) {}
         });
       });
@@ -166,11 +180,26 @@
               bestTarget = { kind: 'upgrade', obj: u };
               bestPrice = price;
             }
+            if (info.pp > 0 && price <= Game.cookies && info.pp < affordPP) {
+              affordPP = info.pp;
+              affordTarget = { kind: 'upgrade', obj: u };
+              affordPrice = price;
+            }
           } catch (e) {}
         });
       }
 
-      return bestTarget ? { target: bestTarget, price: bestPrice } : null;
+      var g = bestTarget ? { target: bestTarget, price: bestPrice } : null;
+      var a = affordTarget ? { target: affordTarget, price: affordPrice } : null;
+      return { global: g, affordable: a };
+    }
+
+    // 当前收入速率：CpS + 连点收入（含狂热等 buff，因为读的都是实时值）
+    function incomeRate() {
+      var cps = Game.cookiesPs || 0;
+      var click = (Game.computedMouseCps || 0) * (1000 / CFG.clickIntervalMs);
+      var r = cps + click;
+      return r > 0 ? r : 1;
     }
 
     function doBuy(best) {
@@ -249,11 +278,22 @@
         }
 
         // --- 购买：扫货模式单拍最多 maxSweepBuys 件，稳态 1 件 ---
+        // v4.7 决策：全局最优买得起→买；买不起且等待≤30s→憋着；
+        // 等待>30s→改买买得起的最优（钱不许闲置）
         var maxBuys = currentMode() === 'sweep' ? CFG.maxSweepBuys : 1;
         for (var k = 0; k < maxBuys; k++) {
-          var best = scanBest();
-          if (!best || best.price > Game.cookies) break;
-          doBuy(best);
+          var s = scanBest();
+          if (!s || !s.global) break;
+          var pick = null;
+          if (s.global.price <= Game.cookies) {
+            pick = s.global;
+          } else {
+            var waitSec = (s.global.price - Game.cookies) / incomeRate();
+            if (waitSec <= CFG.holdSeconds) break; // 近在咫尺，等
+            pick = s.affordable; // 等不起，让钱去干活
+            if (!pick) break;
+          }
+          doBuy(pick);
         }
 
         // --- 零钱扫货（两种模式都跑） ---
@@ -288,7 +328,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.6] 已启动 ✔ 节奏自适应+实时价格修正pp 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.6 已启动', '节奏自适应+pp实时修正运行中');
+    console.log('[AutoPilot v4.7] 已启动 ✔ 节奏自适应+钱不闲置 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.7 已启动', '节奏自适应+钱不闲置模式运行中');
   }
 })();
