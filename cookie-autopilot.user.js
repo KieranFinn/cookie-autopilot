@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      5.1.4
+// @version      5.1.5
 // @description  Cookie Clicker 全自动：连点+金饼干+红饼干+幸运签自动点击+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v5.1.4 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.5 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -19,9 +19,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
- * v5.0.0：废除 pp 均值快道，改为严格全局最优（攒钱策略）
- * v5.1.0：strict / fast 双模式切换（控制台接口）
- * v5.1.1：增加屏幕右上角浮动模式切换按钮
+ * v5.1.5：buyTimes 环形缓冲区、Fortune 单双引号兼容、scanAll 缓存、
+ *          Notify 异常防护、变量名去重
  * v5.1.4：修复 Fortune 检测（查两个 ticker + class="fortune"）、增加红饼干（wrath）自动点击
  * v5.1.3：增加幸运签（Fortune cookie）自动点击
  * v5.1.2：修复 PlaySound 恢复、升级 pp 实时修正、OnAscend 显式判断、
@@ -74,8 +73,25 @@
 
     var stopped = false;
     var tickTimer = null;
-    var buyTimes = []; // 最近购买时间戳（stats 用）
     var modeBtn = null; // 模式切换按钮 DOM
+
+    // ---------- 购买记录：环形缓冲区（O(1) 入队，无 splice） ----------
+    var BUY_BUF_SIZE = 200;
+    var buyTimes = new Array(BUY_BUF_SIZE);
+    var buyIdx = 0;      // 下一个写入位置
+    var buyCount = 0;    // 当前有效元素数
+
+    function noteBuy() {
+      buyTimes[buyIdx] = Date.now();
+      buyIdx = (buyIdx + 1) % BUY_BUF_SIZE;
+      if (buyCount < BUY_BUF_SIZE) buyCount++;
+    }
+
+    // ---------- 候选扫描缓存 ----------
+    var lastScanResult = null;
+    var lastScanTime = 0;
+    var lastScanCookies = 0;
+    var SCAN_CACHE_MS = 500; // 500ms 内 cookies 变化 <10% 则复用上次扫描
 
     // ---------- 0. 屏蔽大饼干点击音效（其它音效保留） ----------
     try {
@@ -96,21 +112,22 @@
       } catch (e) {}
     }, CFG.clickIntervalMs);
 
-    // ---------- 2. 购买记录（stats 用） ----------
-    function noteBuy() {
-      buyTimes.push(Date.now());
-      if (buyTimes.length > 200) buyTimes.splice(0, buyTimes.length - 200);
-    }
-
-    // ---------- 3. 候选扫描：全体候选，按修正 pp 升序 + 全体均值 ----------
-    // pp 用实时价格修正。修正pp = CM的pp × (实时价格 / CM记录价格)。
-    // 返回按修正pp升序的候选列表 + 全体均值（fast 模式用）。
+    // ---------- 2. 候选扫描：全体候选，按修正 pp 升序 + 全体均值 ----------
     function scanAll() {
+      var now = Date.now();
+      var cookiesNow = Game.cookies;
+      // 缓存命中：时间短 + cookies 变化小
+      if (lastScanResult && now - lastScanTime < SCAN_CACHE_MS) {
+        var cookieDelta = lastScanCookies > 0 ? Math.abs(cookiesNow - lastScanCookies) / lastScanCookies : 1;
+        if (cookieDelta < 0.1) return lastScanResult;
+      }
+
       var CMd = window.CookieMonsterData;
       if (!CMd || !CMd.Objects1) return null;
 
       var list = [];
 
+      // 建筑 ×1
       Object.keys(CMd.Objects1).forEach(function (name) {
         try {
           var info = CMd.Objects1[name];
@@ -126,7 +143,7 @@
         } catch (e) {}
       });
 
-      // 批量购买（×10 / ×100）：跨里程碑时可能成为全局最优
+      // 批量购买（×10 / ×100）
       [10, 100].forEach(function (qty) {
         var map = qty === 10 ? CMd.Objects10 : CMd.Objects100;
         if (!map) return;
@@ -146,6 +163,7 @@
         });
       });
 
+      // 升级
       if (CMd.Upgrades) {
         Object.keys(CMd.Upgrades).forEach(function (name) {
           try {
@@ -166,9 +184,14 @@
 
       if (!list.length) return null;
       var sum = 0;
-      for (var i = 0; i < list.length; i++) sum += list[i].adj;
+      for (var k = 0; k < list.length; k++) sum += list[k].adj;
       list.sort(function (a, b) { return a.adj - b.adj; });
-      return { list: list, mean: sum / list.length };
+      var result = { list: list, mean: sum / list.length };
+
+      lastScanResult = result;
+      lastScanTime = now;
+      lastScanCookies = cookiesNow;
+      return result;
     }
 
     function doBuy(c) {
@@ -177,7 +200,7 @@
       noteBuy();
     }
 
-    // ---------- 4. 购买执行（按模式分支） ----------
+    // ---------- 3. 购买执行（按模式分支） ----------
     function buyStrict(s) {
       if (!s || !s.list.length) return;
       var best = s.list[0];
@@ -186,12 +209,12 @@
 
     function buyFast(s) {
       if (!s || !s.list.length) return;
-      for (var k = 0; k < CFG.maxBuysPerTick; k++) {
+      for (var n = 0; n < CFG.maxBuysPerTick; n++) {
         var pick = null;
-        for (var j = 0; j < s.list.length; j++) {
-          var c = s.list[j];
-          if (c.adj > s.mean) break;
-          if (c.price <= Game.cookies) { pick = c; break; }
+        for (var m = 0; m < s.list.length; m++) {
+          var item = s.list[m];
+          if (item.adj > s.mean) break;
+          if (item.price <= Game.cookies) { pick = item; break; }
         }
         if (!pick) break;
         doBuy(pick);
@@ -200,7 +223,7 @@
       }
     }
 
-    // ---------- 5. 模式切换按钮 ----------
+    // ---------- 4. 模式切换按钮 ----------
     function createModeBtn() {
       modeBtn = document.createElement('div');
       modeBtn.id = 'cookie-autopilot-mode-btn';
@@ -228,22 +251,27 @@
       }
     }
 
-    // ---------- 6. 主循环（固定节拍） ----------
+    // ---------- 5. 主循环（固定节拍） ----------
     function tick() {
       if (stopped) return;
       try {
         // --- 黄金饼干 / 红饼干 / 驯鹿：出现即点 ---
-        for (var i = 0; i < Game.shimmers.length; i++) {
-          var shimmer = Game.shimmers[i];
-          if (shimmer && (shimmer.type === 'golden' || shimmer.type === 'wrath' || shimmer.type === 'reindeer') && shimmer.pop) shimmer.pop();
+        var shimmers = Game.shimmers;
+        for (var idx = 0; idx < shimmers.length; idx++) {
+          var sh = shimmers[idx];
+          if (sh && (sh.type === 'golden' || sh.type === 'wrath' || sh.type === 'reindeer') && sh.pop) sh.pop();
         }
 
-        // --- 幸运签（Fortune cookie）：检测 class="fortune" 即点 ---
+        // --- 幸运签（Fortune cookie）：检测 class="fortune" 或 class='fortune' 即点 ---
         try {
-          ['commentsText1', 'commentsText2'].forEach(function (id) {
-            var el = document.getElementById(id);
-            if (el && el.innerHTML.indexOf('class="fortune"') !== -1) el.click();
-          });
+          var tickerIds = ['commentsText1', 'commentsText2'];
+          for (var t = 0; t < tickerIds.length; t++) {
+            var tel = document.getElementById(tickerIds[t]);
+            if (tel) {
+              var html = tel.innerHTML;
+              if (html.indexOf('class="fortune"') !== -1 || html.indexOf("class='fortune'") !== -1) tel.click();
+            }
+          }
         } catch (e) {}
 
         // --- 购买：按模式切换 ---
@@ -251,7 +279,7 @@
         if (CFG.mode === 'strict') buyStrict(scan);
         else buyFast(scan);
 
-        // --- 嬤虫：满员轮替（v4.9.6） ---
+        // --- 嬤虫：满员轮替 ---
         if (Game.wrinklers) {
           if (Game.OnAscend > 0) {
             var anyAlive = false;
@@ -298,9 +326,10 @@
       },
       config: CFG,
       stats: function () {
+        var lastBuy = buyCount > 0 ? buyTimes[(buyIdx - 1 + BUY_BUF_SIZE) % BUY_BUF_SIZE] : null;
         return {
-          recentBuys: buyTimes.length,
-          lastBuyAgoMs: buyTimes.length ? Date.now() - buyTimes[buyTimes.length - 1] : null
+          recentBuys: buyCount,
+          lastBuyAgoMs: lastBuy ? Date.now() - lastBuy : null
         };
       },
       setMode: function (m) {
@@ -311,13 +340,17 @@
         CFG.mode = m;
         updateModeBtn();
         console.log('[AutoPilot] 已切换为 ' + m + ' 模式');
-        if (Game.Notify) Game.Notify('AutoPilot 模式切换', '当前：' + (m === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+        try {
+          if (Game.Notify) Game.Notify('AutoPilot 模式切换', '当前：' + (m === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+        } catch (e) {}
       }
     };
 
     createModeBtn();
 
-    console.log('[AutoPilot v5.1.4] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v5.1.4 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+    console.log('[AutoPilot v5.1.5] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
+    try {
+      if (Game.Notify) Game.Notify('AutoPilot v5.1.5 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+    } catch (e) {}
   }
 })();
