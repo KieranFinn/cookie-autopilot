@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.9.4
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+固定100ms节拍+嬤虫囤积引擎(满员不捏,飞升前全捏)+屏蔽点击音效
+// @version      4.9.5
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+固定100ms节拍纯pp快道+嬤虫囤积引擎(满员不捏,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.9.4 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.9.5 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -24,6 +24,7 @@
  * v4.9.2：扫货/稳态改为"失衡驱动"——存在 adjPP≤均值 且买得起的候选才全速
  * v4.9.3：嬤虫改为 n² 囤积引擎——常态满员不捏、差钱捏最肥的、飞升前全捏
  * v4.9.4：删除扫货/稳态模式系统——固定 100ms 节拍，每拍连环买光合格候选
+ * v4.9.5：删除零钱扫货——所有购买 100% 走 pp 快道，不再有不看 pp 的通道
  * ============================================================ */
 (function () {
   'use strict';
@@ -32,9 +33,7 @@
   var CFG = {
     clickIntervalMs: 4,      // 大饼干点击间隔（毫秒），浏览器最小钳制约 4ms
     tickMs: 100,             // 主循环固定节拍（游戏 33ms/帧结算，100ms 是利用率甜点位）
-    maxBuysPerTick: 200,     // 单拍连环购买上限
-    sweepPriceRatio: 0.001,  // 零钱线：单价 ≤ 存款 × 此比例才算扫货对象
-    sweepBudgetRatio: 0.02   // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
+    maxBuysPerTick: 200      // 单拍连环购买上限
   };
 
   // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
@@ -172,55 +171,6 @@
       noteBuy();
     }
 
-    // ---------- 4. 零钱扫货：单价 ≤0.1% 存款，每拍总花费 ≤2% 存款 ----------
-    function cheapSweep() {
-      var CMd = window.CookieMonsterData;
-      if (!CMd) return;
-      var line = Game.cookies * CFG.sweepPriceRatio;
-      var budget = Game.cookies * CFG.sweepBudgetRatio;
-      if (line <= 0 || budget <= 0) return;
-
-      var cheap = [];
-      for (var bn in Game.Objects) {
-        try {
-          var b = Game.Objects[bn];
-          if (b.locked) continue;
-          var info = CMd.Objects1 && CMd.Objects1[bn];
-          if (info && info.colour === 'Gray') continue;
-          var p = b.getPrice();
-          if (p <= line) cheap.push({ kind: 'building', obj: b, price: p });
-        } catch (e) {}
-      }
-      if (CMd.Upgrades) {
-        for (var un in CMd.Upgrades) {
-          try {
-            var u = Game.Upgrades[un];
-            if (!u || u.bought || !u.unlocked) continue;
-            if (BLACKLIST.indexOf(un) !== -1) continue;
-            var ui = CMd.Upgrades[un];
-            if (ui && ui.colour === 'Gray') continue;
-            var up = u.getPrice ? u.getPrice() : u.basePrice;
-            if (up <= line) cheap.push({ kind: 'upgrade', obj: u, price: up });
-          } catch (e) {}
-        }
-      }
-
-      cheap.sort(function (a, b) { return a.price - b.price; });
-
-      var spent = 0;
-      for (var i = 0; i < cheap.length; i++) {
-        var c = cheap[i];
-        if (spent + c.price > budget) break;
-        if (c.price > Game.cookies) break;
-        try {
-          if (c.kind === 'building') c.obj.buy(1);
-          else c.obj.buy(true);
-          spent += c.price;
-          noteBuy();
-        } catch (e) {}
-      }
-    }
-
     // ---------- 5. 主循环（固定节拍） ----------
     function tick() {
       if (stopped) return;
@@ -281,9 +231,6 @@
             }
           }
         }
-
-        // --- 零钱扫货（每拍都跑） ---
-        cheapSweep();
       } catch (e) {}
       schedule();
     }
@@ -313,7 +260,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.9.4] 已启动 ✔ pp均值快道+固定100ms节拍+嬤虫囤积引擎 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.9.4 已启动', '无模式固定节拍：每拍尽力买光合格候选');
+    console.log('[AutoPilot v4.9.5] 已启动 ✔ 纯pp快道购买+固定100ms节拍+嬤虫囤积引擎 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.9.5 已启动', '零钱扫货已删除：所有购买 100% 按 pp 快道执行');
   }
 })();
