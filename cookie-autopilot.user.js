@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.9.1
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+节奏自适应(已修复卡死)+屏蔽点击音效
+// @version      4.9.2
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(pp实时修正+均值快道)+失衡驱动节奏(扫货/稳态自动切换)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,7 +11,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4.9.1 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.9.2 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -21,6 +21,7 @@
  * v4.5：节奏自适应（扫货20ms×200件 / 稳态250ms×1件）
  * v4.6：连环购买用实时价格修正 pp
  * v4.9：pp 均值阈值快道（取代纯贪心的死等）
+ * v4.9.2：扫货/稳态改为"失衡驱动"——存在 adjPP≤均值 且买得起的候选才全速
  * ============================================================ */
 (function () {
   'use strict';
@@ -31,7 +32,7 @@
     wrinklerPopAt: 10,       // 嬤虫攒满多少只时一起点爆
     sweepTickMs: 20,         // 扫货模式节拍（毫秒）
     steadyTickMs: 250,       // 稳态模式节拍（毫秒）
-    sweepGapMs: 5000,        // 最近两次购买间隔超过此值 → 回落稳态
+    sweepGapMs: 5000,        // 无活干持续超过此值 → 回落稳态（迟滞防抖）
     maxSweepBuys: 200,       // 扫货模式单拍购买上限
     sweepPriceRatio: 0.001,  // 零钱线：单价 ≤ 存款 × 此比例才算扫货对象
     sweepBudgetRatio: 0.02   // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
@@ -69,7 +70,7 @@
 
     var stopped = false;
     var tickTimer = null;
-    var buyTimes = []; // 最近购买时间戳（驱动模式切换）
+    var buyTimes = []; // 最近购买时间戳（stats 用）
 
     // ---------- 0. 屏蔽大饼干点击音效（其它音效保留） ----------
     try {
@@ -91,14 +92,12 @@
     }, CFG.clickIntervalMs);
 
     // ---------- 2. 模式判断 ----------
-    // 扫货：启动时默认进入；最近一次购买距现在 ≤5s 保持
-    // 稳态：超过 5s 没有购买 → 回落；再次出现购买立即回到扫货
-    // （v4.9.1 修复：时间锚点必须是"现在"，不能是"倒数第二笔"，
-    //   否则密集购买结束后永远卡在扫货模式空转烧 CPU）
+    // v4.9.2 失衡驱动：存在"adjPP ≤ 均值 且 买得起"的候选 = 有活干 → 扫货。
+    // 重生后一堆便宜好货 → 自动全速；卖楼后 pp 洼地出现 → 自动回填；
+    // 攒钱期无活干 → 稳态。5 秒迟滞防止边界抖动。
+    var lastWorkTime = Date.now(); // 启动即扫货（重生重建场景）
     function currentMode() {
-      var n = buyTimes.length;
-      if (n < 1) return 'sweep';
-      return (Date.now() - buyTimes[n - 1] <= CFG.sweepGapMs) ? 'sweep' : 'steady';
+      return (Date.now() - lastWorkTime <= CFG.sweepGapMs) ? 'sweep' : 'steady';
     }
 
     function noteBuy() {
@@ -250,11 +249,21 @@
         }
 
         // --- 购买：pp 均值快道 ---
-        // adjPP ≤ 均值且买得起 → 按 pp 从小到大买；否则等。
-        // 扫货模式单拍最多 maxSweepBuys 件，稳态 1 件。
+        // v4.9.2：先扫描一次判断"是否有活干"（adjPP ≤ 均值 且 买得起），
+        // 有活干 → 扫货模式全速连环买；无活干 → 稳态慢速攒钱。
+        var s0 = scanAll();
+        var hasWork = false;
+        if (s0) {
+          for (var j0 = 0; j0 < s0.list.length; j0++) {
+            var c0 = s0.list[j0];
+            if (c0.adj > s0.mean) break;
+            if (c0.price <= Game.cookies) { hasWork = true; break; }
+          }
+        }
+        if (hasWork) lastWorkTime = Date.now();
         var maxBuys = currentMode() === 'sweep' ? CFG.maxSweepBuys : 1;
         for (var k = 0; k < maxBuys; k++) {
-          var s = scanAll();
+          var s = (k === 0 && s0) ? s0 : scanAll();
           if (!s) break;
           var pick = null;
           for (var j = 0; j < s.list.length; j++) {
@@ -298,7 +307,7 @@
       }
     };
 
-    console.log('[AutoPilot v4.9.1] 已启动 ✔ pp均值快道+节奏自适应 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.9.1 已启动', 'pp均值快道+节奏自适应运行中');
+    console.log('[AutoPilot v4.9.2] 已启动 ✔ pp均值快道+失衡驱动节奏 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.9.2 已启动', 'pp均值快道+失衡驱动节奏运行中');
   }
 })();
