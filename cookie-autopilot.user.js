@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      4.4
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(含批量里程碑冲刺)+屏蔽点击音效
+// @version      4.5
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买+购买节奏自适应(扫货/稳态)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,19 +11,27 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v4 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v4.5 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
+ * v4.5：购买节奏自适应——连续购买（间隔≤5s）时进入扫货模式
+ *       （20ms/拍 + 单拍最多买200件），购买停顿5s以上回落稳态
+ *       （250ms/拍 + 单拍1件）；大件永远 pp 最优优先。
  * ============================================================ */
 (function () {
   'use strict';
 
   // ---------- 配置区 ----------
   var CFG = {
-    clickIntervalMs: 4,         // 大饼干点击间隔（毫秒），浏览器最小钳制约 4ms
-    wrinklerPopAt: 10,          // 嬤虫攒满多少只时一起点爆
-    tickMs: 250                 // 主循环间隔（毫秒）
+    clickIntervalMs: 4,      // 大饼干点击间隔（毫秒），浏览器最小钳制约 4ms
+    wrinklerPopAt: 10,       // 嬤虫攒满多少只时一起点爆
+    sweepTickMs: 20,         // 扫货模式节拍（毫秒）
+    steadyTickMs: 250,       // 稳态模式节拍（毫秒）
+    sweepGapMs: 5000,        // 最近两次购买间隔超过此值 → 回落稳态
+    maxSweepBuys: 200,       // 扫货模式单拍购买上限
+    sweepPriceRatio: 0.001,  // 零钱线：单价 ≤ 存款 × 此比例才算扫货对象
+    sweepBudgetRatio: 0.02   // 每拍扫货总花费 ≤ 存款 × 此比例（硬封顶）
   };
 
   // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
@@ -56,7 +64,9 @@
   function start() {
     if (window.CookieAutoPilot) { window.CookieAutoPilot.stop(); }
 
-    var timers = [];
+    var stopped = false;
+    var tickTimer = null;
+    var buyTimes = []; // 最近购买时间戳（驱动模式切换）
 
     // ---------- 0. 屏蔽大饼干点击音效（其它音效保留） ----------
     try {
@@ -70,15 +80,146 @@
     } catch (e) {}
 
     // ---------- 1. 自动点击大饼干 ----------
-    timers.push(setInterval(function () {
+    var clickTimer = setInterval(function () {
       try {
         var el = document.getElementById('bigCookie');
         if (el) { Game.lastClick -= 1000; el.click(); }
       } catch (e) {}
-    }, CFG.clickIntervalMs));
+    }, CFG.clickIntervalMs);
 
-    // ---------- 2. 主循环 ----------
-    timers.push(setInterval(function () {
+    // ---------- 2. 模式判断 ----------
+    // 扫货：启动时默认进入；最近两次购买间隔 ≤5s 保持
+    // 稳态：购买停顿 >5s 后回落，再次出现密集购买自动回到扫货
+    function currentMode() {
+      var n = buyTimes.length;
+      if (n < 2) return 'sweep';
+      return (buyTimes[n - 1] - buyTimes[n - 2] <= CFG.sweepGapMs) ? 'sweep' : 'steady';
+    }
+
+    function noteBuy() {
+      buyTimes.push(Date.now());
+      if (buyTimes.length > 200) buyTimes.splice(0, buyTimes.length - 200);
+    }
+
+    // ---------- 3. 候选扫描：pp 最优目标 ----------
+    function scanBest() {
+      var CMd = window.CookieMonsterData;
+      if (!CMd || !CMd.Objects1) return null;
+
+      var bestTarget = null, bestPP = Infinity, bestPrice = 0;
+
+      Object.keys(CMd.Objects1).forEach(function (name) {
+        try {
+          var info = CMd.Objects1[name];
+          var b = Game.Objects[name];
+          if (!info || !b || b.locked) return;
+          if (info.colour === 'Gray') return;
+          if (info.pp > 0 && info.pp < bestPP) {
+            bestPP = info.pp;
+            bestTarget = { kind: 'building', obj: b, amount: 1 };
+            bestPrice = b.getPrice();
+          }
+        } catch (e) {}
+      });
+
+      // 批量购买（×10 / ×100）：跨里程碑时可能成为全局最优
+      [10, 100].forEach(function (qty) {
+        var map = qty === 10 ? CMd.Objects10 : CMd.Objects100;
+        if (!map) return;
+        Object.keys(map).forEach(function (name) {
+          try {
+            var info = map[name];
+            var b = Game.Objects[name];
+            if (!info || !b || b.locked) return;
+            if (info.colour === 'Gray') return;
+            if (info.pp > 0 && info.pp < bestPP) {
+              bestPP = info.pp;
+              bestTarget = { kind: 'building', obj: b, amount: qty };
+              bestPrice = info.price;
+            }
+          } catch (e) {}
+        });
+      });
+
+      if (CMd.Upgrades) {
+        Object.keys(CMd.Upgrades).forEach(function (name) {
+          try {
+            var info = CMd.Upgrades[name];
+            var u = Game.Upgrades[name];
+            if (!info || !u || u.bought || !u.unlocked) return;
+            if (info.colour === 'Gray') return;
+            if (BLACKLIST.indexOf(name) !== -1) return;
+            var price = u.getPrice ? u.getPrice() : u.basePrice;
+            if (info.pp > 0 && info.pp < bestPP) {
+              bestPP = info.pp;
+              bestTarget = { kind: 'upgrade', obj: u };
+              bestPrice = price;
+            }
+          } catch (e) {}
+        });
+      }
+
+      return bestTarget ? { target: bestTarget, price: bestPrice } : null;
+    }
+
+    function doBuy(best) {
+      if (best.target.kind === 'building') best.target.obj.buy(best.target.amount || 1);
+      else best.target.obj.buy(true);
+      noteBuy();
+    }
+
+    // ---------- 4. 零钱扫货：单价 ≤0.1% 存款，每拍总花费 ≤2% 存款 ----------
+    function cheapSweep() {
+      var CMd = window.CookieMonsterData;
+      if (!CMd) return;
+      var line = Game.cookies * CFG.sweepPriceRatio;
+      var budget = Game.cookies * CFG.sweepBudgetRatio;
+      if (line <= 0 || budget <= 0) return;
+
+      var cheap = [];
+      for (var bn in Game.Objects) {
+        try {
+          var b = Game.Objects[bn];
+          if (b.locked) continue;
+          var info = CMd.Objects1 && CMd.Objects1[bn];
+          if (info && info.colour === 'Gray') continue;
+          var p = b.getPrice();
+          if (p <= line) cheap.push({ kind: 'building', obj: b, price: p });
+        } catch (e) {}
+      }
+      if (CMd.Upgrades) {
+        for (var un in CMd.Upgrades) {
+          try {
+            var u = Game.Upgrades[un];
+            if (!u || u.bought || !u.unlocked) continue;
+            if (BLACKLIST.indexOf(un) !== -1) continue;
+            var ui = CMd.Upgrades[un];
+            if (ui && ui.colour === 'Gray') continue;
+            var up = u.getPrice ? u.getPrice() : u.basePrice;
+            if (up <= line) cheap.push({ kind: 'upgrade', obj: u, price: up });
+          } catch (e) {}
+        }
+      }
+
+      cheap.sort(function (a, b) { return a.price - b.price; });
+
+      var spent = 0;
+      for (var i = 0; i < cheap.length; i++) {
+        var c = cheap[i];
+        if (spent + c.price > budget) break;
+        if (c.price > Game.cookies) break;
+        try {
+          if (c.kind === 'building') c.obj.buy(1);
+          else c.obj.buy(true);
+          spent += c.price;
+          noteBuy();
+        } catch (e) {}
+      }
+    }
+
+    // ---------- 5. 主循环（动态节拍） ----------
+    function tick() {
+      if (stopped) return;
       try {
         // --- 黄金饼干 / 红饼干 / 驯鹿：出现即点 ---
         for (var i = 0; i < Game.shimmers.length; i++) {
@@ -96,84 +237,47 @@
           }
         }
 
-        // --- 自动购买：按 Cookie Monster 的 payback period 最小者 ---
-        // 预算 = 当前存款，够钱立即买，无保留金、无冷却
-        var CMd = window.CookieMonsterData;
-        if (!CMd || !CMd.Objects1) return;
-
-        var bestTarget = null, bestPP = Infinity, bestPrice = 0;
-
-        Object.keys(CMd.Objects1).forEach(function (name) {
-          try {
-            var info = CMd.Objects1[name];
-            var b = Game.Objects[name];
-            if (!info || !b || b.locked) return;
-            if (info.colour === 'Gray') return;
-            if (info.pp > 0 && info.pp < bestPP) {
-              bestPP = info.pp;
-              bestTarget = { kind: 'building', obj: b, amount: 1 };
-              bestPrice = b.getPrice();
-            }
-          } catch (e) {}
-        });
-
-        // 批量购买（×10 / ×100）：平时性价比不如单买，
-        // 但跨越里程碑（50/100 座等成就+阶层升级解锁）时会成为全局最优
-        [10, 100].forEach(function (qty) {
-          var map = qty === 10 ? CMd.Objects10 : CMd.Objects100;
-          if (!map) return;
-          Object.keys(map).forEach(function (name) {
-            try {
-              var info = map[name];
-              var b = Game.Objects[name];
-              if (!info || !b || b.locked) return;
-              if (info.colour === 'Gray') return;
-              if (info.pp > 0 && info.pp < bestPP) {
-                bestPP = info.pp;
-                bestTarget = { kind: 'building', obj: b, amount: qty };
-                bestPrice = info.price;
-              }
-            } catch (e) {}
-          });
-        });
-
-        if (CMd.Upgrades) {
-          Object.keys(CMd.Upgrades).forEach(function (name) {
-            try {
-              var info = CMd.Upgrades[name];
-              var u = Game.Upgrades[name];
-              if (!info || !u || u.bought || !u.unlocked) return;
-              if (info.colour === 'Gray') return;
-              if (BLACKLIST.indexOf(name) !== -1) return;
-              var price = u.getPrice ? u.getPrice() : u.basePrice;
-              if (info.pp > 0 && info.pp < bestPP) {
-                bestPP = info.pp;
-                bestTarget = { kind: 'upgrade', obj: u };
-                bestPrice = price;
-              }
-            } catch (e) {}
-          });
+        // --- 购买：扫货模式单拍最多 maxSweepBuys 件，稳态 1 件 ---
+        var maxBuys = currentMode() === 'sweep' ? CFG.maxSweepBuys : 1;
+        for (var k = 0; k < maxBuys; k++) {
+          var best = scanBest();
+          if (!best || best.price > Game.cookies) break;
+          doBuy(best);
         }
 
-        if (bestTarget && bestPrice <= Game.cookies) {
-          if (bestTarget.kind === 'building') bestTarget.obj.buy(bestTarget.amount || 1);
-          else bestTarget.obj.buy(true);
-        }
+        // --- 零钱扫货（两种模式都跑） ---
+        cheapSweep();
       } catch (e) {}
-    }, CFG.tickMs));
+      schedule();
+    }
+
+    function schedule() {
+      if (stopped) return;
+      tickTimer = setTimeout(tick, currentMode() === 'sweep' ? CFG.sweepTickMs : CFG.steadyTickMs);
+    }
+
+    schedule();
 
     // ---------- 对外接口 ----------
     window.CookieAutoPilot = {
       stop: function () {
-        timers.forEach(clearInterval);
-        timers = [];
+        stopped = true;
+        if (tickTimer) clearTimeout(tickTimer);
+        clearInterval(clickTimer);
         delete window.CookieAutoPilot;
         console.log('[AutoPilot] 已停止。');
       },
-      config: CFG
+      config: CFG,
+      stats: function () {
+        return {
+          mode: currentMode(),
+          recentBuys: buyTimes.length,
+          lastBuyAgoMs: buyTimes.length ? Date.now() - buyTimes[buyTimes.length - 1] : null
+        };
+      }
     };
 
-    console.log('[AutoPilot v4.4] 已启动 ✔ 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v4.4 已启动', '全自动模式运行中');
+    console.log('[AutoPilot v4.5] 已启动 ✔ 节奏自适应（扫货20ms/稳态250ms） 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v4.5 已启动', '购买节奏自适应模式运行中');
   }
 })();
