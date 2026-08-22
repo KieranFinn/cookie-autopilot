@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
-// @version      5.0.0
-// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(严格全局最优，攒钱等pp最低项)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
+// @version      5.1.0
+// @description  Cookie Clicker 全自动：连点+金饼干+CM最优购买(strict/fast双模式切换)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -11,21 +11,26 @@
 // @downloadURL  https://raw.githubusercontent.com/KieranFinn/cookie-autopilot/main/cookie-autopilot.user.js
 // ==/UserScript==
 /* ============================================================
- * Cookie AutoPilot v5.0.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
- * 购买规则：严格全局最优 —— 只买当前全体候选中修正 pp 最低的那一项；
- *           买不起就什么都不买，纯攒钱等。
+ * 购买规则：
+ *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
+ *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
+ *   切换：CookieAutoPilot.setMode('strict'|'fast')
  * v5.0.0：废除 pp 均值快道，改为严格全局最优（攒钱策略）
+ * v5.1.0：strict / fast 双模式切换
  * ============================================================ */
 (function () {
   'use strict';
 
   // ---------- 配置区 ----------
   var CFG = {
-    clickIntervalMs: 4,      // 大饼干点击间隔（毫秒），浏览器最小钳制约 4ms
-    tickMs: 100              // 主循环固定节拍（游戏 33ms/帧结算，100ms 是利用率甜点位）
+    clickIntervalMs: 4,       // 大饼干点击间隔（毫秒），浏览器最小钳制约 4ms
+    tickMs: 100,              // 主循环固定节拍
+    mode: 'strict',           // 'strict' = 严格全局最优；'fast' = pp 均值快道
+    maxBuysPerTick: 200       // fast 模式单拍连环购买上限（strict 模式忽略）
   };
 
   // 永远不自动购买的升级（会改变黄金饼干机制或纯亏）
@@ -87,9 +92,9 @@
       if (buyTimes.length > 200) buyTimes.splice(0, buyTimes.length - 200);
     }
 
-    // ---------- 3. 候选扫描：全体候选，按修正 pp 升序 ----------
+    // ---------- 3. 候选扫描：全体候选，按修正 pp 升序 + 全体均值 ----------
     // pp 用实时价格修正。修正pp = CM的pp × (实时价格 / CM记录价格)。
-    // 返回按修正pp升序的候选列表（不含均值）。
+    // 返回按修正pp升序的候选列表 + 全体均值（fast 模式用）。
     function scanAll() {
       var CMd = window.CookieMonsterData;
       if (!CMd || !CMd.Objects1) return null;
@@ -148,14 +153,39 @@
       }
 
       if (!list.length) return null;
+      var sum = 0;
+      for (var i = 0; i < list.length; i++) sum += list[i].adj;
       list.sort(function (a, b) { return a.adj - b.adj; });
-      return { list: list };
+      return { list: list, mean: sum / list.length };
     }
 
     function doBuy(c) {
       if (c.target.kind === 'building') c.target.obj.buy(c.target.amount || 1);
       else c.target.obj.buy(true);
       noteBuy();
+    }
+
+    // ---------- 4. 购买执行（按模式分支） ----------
+    function buyStrict(s) {
+      if (!s || !s.list.length) return;
+      var best = s.list[0];
+      if (best.price <= Game.cookies) doBuy(best);
+    }
+
+    function buyFast(s) {
+      if (!s || !s.list.length) return;
+      for (var k = 0; k < CFG.maxBuysPerTick; k++) {
+        var pick = null;
+        for (var j = 0; j < s.list.length; j++) {
+          var c = s.list[j];
+          if (c.adj > s.mean) break;
+          if (c.price <= Game.cookies) { pick = c; break; }
+        }
+        if (!pick) break;
+        doBuy(pick);
+        s = scanAll();
+        if (!s) break;
+      }
     }
 
     // ---------- 5. 主循环（固定节拍） ----------
@@ -168,20 +198,12 @@
           if (s && (s.type === 'golden' || s.type === 'reindeer') && s.pop) s.pop();
         }
 
-        // --- 购买：严格全局最优（v5.0.0） ---
-        // 每拍只买一件：全体候选中修正 pp 最低者，买得起就买，买不起就等。
+        // --- 购买：按模式切换 ---
         var s = scanAll();
-        if (s && s.list.length > 0) {
-          var best = s.list[0];
-          if (best.price <= Game.cookies) {
-            doBuy(best);
-          }
-        }
+        if (CFG.mode === 'strict') buyStrict(s);
+        else buyFast(s);
 
         // --- 嬤虫：满员轮替（v4.9.6） ---
-        // 满员时只捏最肥的一只（腾出虫位让新虫进场，其余保持满转速 n² 囤积，
-        // 虫位上限跟随 Game.getWrinklersMax()）；闪光虫留到飞升前；
-        // 飞升面板打开时全捏（囤积跨飞升清零）。
         if (Game.wrinklers) {
           if (Game.OnAscend) {
             var anyAlive = false;
@@ -229,10 +251,19 @@
           recentBuys: buyTimes.length,
           lastBuyAgoMs: buyTimes.length ? Date.now() - buyTimes[buyTimes.length - 1] : null
         };
+      },
+      setMode: function (m) {
+        if (m !== 'strict' && m !== 'fast') {
+          console.warn('[AutoPilot] 模式必须是 strict 或 fast');
+          return;
+        }
+        CFG.mode = m;
+        console.log('[AutoPilot] 已切换为 ' + m + ' 模式');
+        if (Game.Notify) Game.Notify('AutoPilot 模式切换', '当前：' + (m === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
       }
     };
 
-    console.log('[AutoPilot v5.0.0] 已启动 ✔ 严格全局最优购买+固定100ms节拍+嬤虫满员轮替 停止请输入 CookieAutoPilot.stop()');
-    if (Game.Notify) Game.Notify('AutoPilot v5.0.0 已启动', '严格全局最优：只买 pp 最低项，买不起就攒钱等');
+    console.log('[AutoPilot v5.1.0] 已启动 ✔ 模式=' + CFG.mode + ' | 切换请输入 CookieAutoPilot.setMode("strict"/"fast") | 停止请输入 CookieAutoPilot.stop()');
+    if (Game.Notify) Game.Notify('AutoPilot v5.1.0 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
   }
 })();
