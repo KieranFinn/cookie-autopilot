@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.10.3 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.11.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,10 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.11.0：新增「卡7飞升」按钮（右上）：启动后每 200ms 监测「现在飞升的威望值」
+ *          （floor(HowMuchPrestige(cookiesReset))），含 4 个 7 的瞬间同一拍内停掉
+ *          全部自动化并自动飞升（Game.Ascend(1) 绕过确认弹窗），零漂移锁定 Lucky
+ *          digit/number/payout 的出现条件；可在天堂树买完升级后手动 Reincarnate
  * v5.10.3：命运面板新增延长时间（Stretch Time）成败预测——按实际连招顺序偏移：
  *          打 1 发命运之手后施放 = 种子 #N+1，打 2 发后 = 种子 #N+2，两次都给出
  * v5.10.2：刷哥斯马克结束时播报本次最高 Devastation 倍率（峰值跟踪 + Notify/控制台，
@@ -1487,6 +1491,88 @@
       gzBtn = null;
     }
 
+    // ---------- 卡 7 飞升（右上按钮：威望含 N 个 7 的瞬间停手并自动飞升） ----------
+    // 威望只看 cookiesReset（有史以来总烘焙量），卖建筑不影响它，所以不需要卖楼——
+    // 检测到目标后同一 JS 拍内停手 + 飞升，游戏逻辑帧不会插入，数字零漂移。
+    var sevenBtn = null;
+    var sevenArmed = false;
+    var sevenTimer = null;
+    var sevenTarget = 4; // 需要的 7 的个数（CookieAutoPilot.seven.start(n) 可调）
+
+    function sevenTick() {
+      if (!sevenArmed) return;
+      var next = Math.floor(Game.HowMuchPrestige(Game.cookiesReset)); // 现在飞升后的威望
+      var sevens = ('' + next).split('7').length - 1;
+      if (sevens >= sevenTarget) { sevenFire(next, sevens); return; }
+      if (sevenBtn) sevenBtn.textContent = '卡7中（' + sevens + '/' + sevenTarget + '）';
+    }
+
+    function sevenFire(next, sevens) {
+      sevenArmed = false;
+      if (sevenTimer) { clearInterval(sevenTimer); sevenTimer = null; }
+      // 同一拍内完成全部动作，杜绝任何饼干变动：
+      if (gzOn) gzStop('卡7飞升触发');
+      if (farmActive) farmFinish('卡7飞升触发', false);
+      setEnabled(false);   // 停主循环 + 连点（点击/买楼/点金饼干都会增加烘焙量）
+      Game.Ascend(1);      // 立刻飞升（bypass 确认弹窗，main.js 4371）
+      updateSevenBtn();
+      var msg = '飞升威望 = ' + Beautify(next) + '（含 ' + sevens + ' 个 7）';
+      console.log('[AutoPilot 卡7] 🎯 ' + msg + '，已自动飞升！请在天堂树购买 Lucky digit' +
+        (sevens >= 2 ? '/Lucky number' : '') + (sevens >= 4 ? '/Lucky payout' : '') + ' 后手动 Reincarnate');
+      try { if (Game.Notify) Game.Notify('卡7飞升成功 🎯', msg + '！买 Lucky 升级后手动 Reincarnate', 0, 60); } catch (e) {}
+    }
+
+    function sevenStart(n) {
+      if (n && n >= 1) sevenTarget = Math.floor(n);
+      if (sevenArmed) return;
+      // 启动前先报一下现状
+      var next = Math.floor(Game.HowMuchPrestige(Game.cookiesReset));
+      var sevens = ('' + next).split('7').length - 1;
+      console.log('[AutoPilot 卡7] 开始监测：目标 ' + sevenTarget + ' 个 7（现在飞升威望 = ' + Beautify(next) + '，含 ' + sevens + ' 个）');
+      sevenArmed = true;
+      sevenTimer = setInterval(function () { try { sevenTick(); } catch (e) {} }, 200);
+      updateSevenBtn();
+      try { if (Game.Notify) Game.Notify('卡7飞升 已启动', '威望含 ' + sevenTarget + ' 个 7 的瞬间自动停手并飞升'); } catch (e) {}
+    }
+
+    function sevenStop(reason) {
+      if (!sevenArmed) return;
+      sevenArmed = false;
+      if (sevenTimer) { clearInterval(sevenTimer); sevenTimer = null; }
+      updateSevenBtn();
+      console.log('[AutoPilot 卡7] 已解除：' + reason);
+    }
+
+    function createSevenBtn() {
+      sevenBtn = document.createElement('div');
+      sevenBtn.id = 'cookie-autopilot-seven-btn';
+      sevenBtn.style.cssText = 'position:fixed;top:10px;right:398px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      updateSevenBtn();
+      sevenBtn.onclick = function () {
+        if (sevenArmed) sevenStop('手动解除');
+        else sevenStart();
+      };
+      document.body.appendChild(sevenBtn);
+    }
+    function updateSevenBtn() {
+      if (!sevenBtn) return;
+      if (sevenArmed) {
+        var next = Math.floor(Game.HowMuchPrestige(Game.cookiesReset));
+        var sevens = ('' + next).split('7').length - 1;
+        sevenBtn.textContent = '卡7中（' + sevens + '/' + sevenTarget + '）';
+        sevenBtn.style.background = '#d4a017';
+      } else {
+        sevenBtn.textContent = '卡7飞升';
+        sevenBtn.style.background = '#6b7280';
+      }
+    }
+    function removeSevenUI() {
+      if (sevenTimer) clearInterval(sevenTimer);
+      sevenArmed = false;
+      if (sevenBtn && sevenBtn.parentNode) sevenBtn.parentNode.removeChild(sevenBtn);
+      sevenBtn = null;
+    }
+
     // ---------- 花园自动育种（全自动集齐图鉴；杂交最优留空布局） ----------
     // 原理：游戏全部杂交配方集中在 minigameGarden.js 的 M.getMuts(neighs, neighsM)
     // 纯函数中。本模块在运行时对所有已解锁植物的双亲组合暴力探测 getMuts，
@@ -1958,6 +2044,7 @@
         removeFarmUI();
         removeGzUI();
         removeUltBtn();
+        removeSevenUI();
         removeGardenUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
@@ -2009,6 +2096,11 @@
         status: gzStatus
       },
       ultimate: ultimateBurst,
+      seven: {
+        start: sevenStart,           // seven.start(2) 可改目标个数（卡 Lucky number 等）
+        stop: function () { sevenStop('手动解除'); },
+        armed: function () { return sevenArmed; }
+      },
       predictSpellWin: function (spellName) {
         var wiz = Game.Objects['Wizard tower'];
         if (!wiz || !wiz.minigame || !wiz.minigame.spells || !wiz.minigame.spells[spellName]) return null;
@@ -2039,11 +2131,12 @@
     createFarmBtn();
     createGzBtn();
     createUltBtn();
+    createSevenBtn();
     createGardenBtn();
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.10.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：终极爆发/刷金/刷哥斯马克，紫=总开关，绿/蓝=模式');
+    console.log('[AutoPilot v5.11.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：卡7飞升/终极爆发/刷金/刷哥斯马克，紫=总开关，绿/蓝=模式');
     try {
       if (Game.Notify) Game.Notify('AutoPilot v5.10.0 已启动', '新增：终极爆发按钮（黄金开关+糖狂潮+三连贷+延长 buff，延长法术带成败预测）');
     } catch (e) {}
