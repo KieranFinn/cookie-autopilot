@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.10.1 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.10.2 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.10.2：刷哥斯马克结束时播报本次最高 Devastation 倍率（峰值跟踪 + Notify/控制台，
+ *          status 里新增 peak 与历史最佳 bestEver）
  * v5.10.1：Godzamok 卖楼保护小游戏建筑（农场/神殿/魔法塔/银行）——卖掉神殿会
  *          连同万神殿和槽里的 Godzamok 一起消失，叠层、手动卖楼、刷哥斯马克统一保护
  * v5.10.0：新增「终极爆发」按钮（右上）：一键开黄金开关 + 糖块狂热（手动扣糖块
@@ -1333,6 +1335,8 @@
     var gzTimer = null;
     var gzCycles = 0;      // 本次累计循环次数
     var gzSoldTotal = 0;   // 本次累计卖出座数
+    var gzPeak = 0;        // 本次最高 Devastation 倍率（multClick 峰值）
+    var gzBestEver = 0;    // 历史最佳（本次运行脚本期间）
     var GZ_CYCLES_PER_TICK = 5; // 每拍循环数（防卡顿）
     var GZ_TICK_MS = 200;       // 节拍（10s 窗口 ≈ 50 拍 × 5 轮 = 250 次全卖全买）
 
@@ -1378,6 +1382,9 @@
         }
       } catch (e) {}
       window.PlaySound = ps;
+      // 跟踪本次 Devastation 峰值
+      var deva = Game.hasBuff && Game.hasBuff('Devastation');
+      if (deva && deva.multClick > gzPeak) gzPeak = deva.multClick;
       updateGzBtn();
     }
 
@@ -1392,6 +1399,7 @@
       gzOn = true;
       gzCycles = 0;
       gzSoldTotal = 0;
+      gzPeak = 0;
       startClicker();
       gzTimer = setInterval(function () { try { gzTick(); } catch (e) {} }, GZ_TICK_MS);
       updateGzBtn();
@@ -1406,9 +1414,12 @@
       if (!enabled) stopClicker();
       updateGzBtn();
       var deva = Game.hasBuff && Game.hasBuff('Devastation');
-      console.log('[AutoPilot GZ] 停止：' + reason + '（循环 ' + gzCycles + ' 次，共卖出 ' + gzSoldTotal + ' 座' +
-        (deva ? '，当前 Devastation ×' + deva.multClick.toFixed(1) : '') + '）');
-      try { if (Game.Notify) Game.Notify('刷哥斯马克 停止', reason + '（循环 ×' + gzCycles + '）'); } catch (e) {}
+      // 峰值补读：停下来这一刻若还在涨，以当前值为准
+      if (deva && deva.multClick > gzPeak) gzPeak = deva.multClick;
+      if (gzPeak > gzBestEver) gzBestEver = gzPeak;
+      var peakStr = gzPeak > 0 ? '最高 Devastation ×' + gzPeak.toFixed(1) + '（+' + Math.round((gzPeak - 1) * 100) + '% 点击）' : '未叠出 Devastation';
+      console.log('[AutoPilot GZ] 停止：' + reason + '｜' + peakStr + '｜循环 ' + gzCycles + ' 次，共卖出 ' + gzSoldTotal + ' 座｜历史最佳 ×' + gzBestEver.toFixed(1));
+      try { if (Game.Notify) Game.Notify('刷哥斯马克 结束 🏚', peakStr + '（循环 ×' + gzCycles + '，历史最佳 ×' + gzBestEver.toFixed(1) + '）', 0, 10); } catch (e) {}
     }
 
     function gzStatus() {
@@ -1417,6 +1428,8 @@
         on: gzOn,
         cycles: gzCycles,
         soldTotal: gzSoldTotal,
+        peak: gzPeak,
+        bestEver: gzBestEver,
         devastation: deva ? { multClick: deva.multClick, timeLeft: Math.ceil(deva.time / Game.fps) + 's' } : null
       };
     }
