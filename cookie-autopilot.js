@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.9.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.9.1 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,9 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.9.1：重写「刷哥斯马克」为纯叠层器（去除连招流程）：Godzamok 入钻石槽后，
+ *          每 200ms 执行 5 轮同帧全卖全买，只靠高频买卖在 Devastation 10s 续期内
+ *          把点击倍率叠到极限；按钮实时显示当前 Devastation 倍率
  * v5.9.0：新增「刷哥斯马克」最高自动模式（右上按钮）：自动把 Godzamok 放入万神殿
  *          钻石槽（消耗 1 次 worship swap）→ 循环刷 buff：龙之宝珠卖楼召唤金饼干
  *          刷 Frenzy → Frenzy 在场且命运之手预测为高价值（CF/建筑特赐）时自动施放
@@ -1225,24 +1228,21 @@
       farmBtn = null;
     }
 
-    // ---------- 刷哥斯马克（全自动连招模式，右上按钮） ----------
-    // 流程：Godzamok 放入万神殿钻石槽（P.slotGod + 消耗 1 次 worship swap）→ 循环：
-    // 无 buff 时龙之宝珠卖楼召唤金饼干刷 Frenzy → Frenzy 在场时查命运之手两发预测，
-    // 高价值（CF/建筑特赐）则自动施放并点爆召唤饼干，不佳则用最低耗魔法术刷序列 →
-    // 连招（F+CF 及以上）触发后，主循环的黄金开关 + Godzamok 叠层自动接力 →
-    // buff 全部结束自动进入下一轮。需总开关开启（叠层/黄金开关在主循环里）。
-    var comboFarmBtn = null;
-    var comboFarmOn = false;
-    var comboFarmTimer = null;
-    var comboFarmPhase = '';
-    var comboFarmCombos = 0;       // 已完成连招次数
-    var comboFarmInCombo = false;  // 当前是否处于连招窗口
-    var CF_AURA_ON = [19, 10];     // 刷 buff 光环：龙之宝珠 + 飞龙在天
-    var CF_AURA_OFF = [15, 1];     // 停止换回：Radiant Appetite + 牛奶之息
-    var CF_FTHOF_ACCEPT = { 'click frenzy': 1, 'building special': 1 }; // Frenzy 中值得打命运之手的结果
+    // ---------- 刷哥斯马克（手动叠层器：10s 窗口内最高频买卖，Devastation 叠到极限） ----------
+    // 原理（main.js 8187-8198）：每次 sell() 按卖出总数叠加 Devastation
+    // multClick += sold×1%（钻石位；红宝石 0.5%、翡翠 0.25%），max:true 续期 10s。
+    // 只要 10s 内持续再卖，层数不掉且无限叠加；同帧立刻买回使 CpS 不掉。
+    // 上限只取决于买卖损耗（默认回收 50%）与点击/CpS 回血速度——层数越高点击越赚。
+    var gzBtn = null;
+    var gzOn = false;
+    var gzTimer = null;
+    var gzCycles = 0;      // 本次累计循环次数
+    var gzSoldTotal = 0;   // 本次累计卖出座数
+    var GZ_CYCLES_PER_TICK = 5; // 每拍循环数（防卡顿）
+    var GZ_TICK_MS = 200;       // 节拍（10s 窗口 ≈ 50 拍 × 5 轮 = 250 次全卖全买）
 
     // 把 Godzamok（ruin）放入钻石槽（slot 0）；返回 '' 成功，否则返回原因
-    function comboFarmSlotGodzamok() {
+    function gzSlotGodzamok() {
       var T = Game.Objects['Temple'];
       if (!T || !T.minigame || !T.minigame.gods) return '未检测到万神殿（需要 1 座 1 级以上神殿 Temple）';
       var P = T.minigame;
@@ -1255,160 +1255,103 @@
       return '';
     }
 
-    // 连招状态扫描（与 checkCombo 同源）
-    function comboFarmLevel() {
-      var hasF = false, hasCF = false, hasDF = false, hasEF = false, hasBS = false;
-      for (var bn in Game.buffs) {
-        var b = Game.buffs[bn];
-        if (!b) continue;
-        if (b.name === 'Frenzy') hasF = true;
-        else if (b.name === 'Click frenzy') hasCF = true;
-        else if (b.name === 'Dragonflight') hasDF = true;
-        else if (b.name === 'Elder frenzy') hasEF = true;
-        else if (b.type && b.type.name === 'building buff') hasBS = true;
+    // 一轮「全卖 → 同帧全买回」，返回本轮卖出总座数
+    function gzCycleOnce() {
+      var sold = 0;
+      for (var i = 0; i < Game.ObjectsById.length; i++) {
+        var b = Game.ObjectsById[i];
+        var amt = b.amount;
+        if (amt <= 0) continue;
+        b.sell(amt);   // Devastation 叠加 amt×1%
+        b.buy(amt);    // 同帧买回（钱不够时 buy 内部买到买得起为止，自然收敛）
+        sold += amt;
       }
-      return { level: (hasF ? 1 : 0) + (hasBS ? 2 : 0) + (hasCF || hasDF ? 3 : 0) + (hasEF ? 4 : 0), hasF: hasF, hasCF: hasCF || hasDF };
+      return sold;
     }
 
-    function comboFarmTick() {
-      if (!comboFarmOn) return;
-      if (!enabled) { comboFarmPhase = '总开关关闭，暂停'; updateComboFarmBtn(); return; }
-      if (!clickTimer) startClicker(); // 连点是连招收益的出口
-      var st = comboFarmLevel();
-
-      // 1. 连招窗口中：黄金开关 + 叠层循环在主循环自动运行，这里只监控
-      if (st.level >= 4) {
-        comboFarmInCombo = true;
-        comboFarmPhase = '💥 连招爆发中';
-        updateComboFarmBtn();
-        return;
-      }
-      if (comboFarmInCombo && st.level === 0) {
-        comboFarmInCombo = false;
-        comboFarmCombos++;
-        comboFarmPhase = '连招完成 ×' + comboFarmCombos;
-        console.log('[AutoPilot ComboFarm] 连招完成（累计 ' + comboFarmCombos + ' 次），进入下一轮');
-        updateComboFarmBtn();
-      }
-
-      // 2. Frenzy 在场（无 CF）→ 命运之手决策
-      if (st.hasF && !st.hasCF) {
-        var p = null;
-        try { p = fthofPredict(); } catch (e) {}
-        if (!p) { comboFarmPhase = 'Frenzy 在场，但未检测到魔法塔，命运之手不可用'; updateComboFarmBtn(); return; }
-        var M = Game.Objects['Wizard tower'].minigame;
-        var fthofCost = M.getSpellCost(M.spells['hand of fate']);
-        if (p.casts[0].win && CF_FTHOF_ACCEPT[p.casts[0].force]) {
-          if (M.magic >= fthofCost) {
-            fthofCastQuiet(M, M.spells['hand of fate']);
-            // 点爆刚召唤的命运饼干（主循环 100ms 内也会点，双保险）
-            for (var i = 0; i < Game.shimmers.length; i++) {
-              var sh = Game.shimmers[i];
-              if (sh && sh.type === 'golden' && sh.force && sh.pop) sh.pop();
-            }
-            comboFarmPhase = '已打命运之手：' + p.casts[0].force;
-            console.log('[AutoPilot ComboFarm] Frenzy 中施放命运之手 → ' + p.casts[0].force);
-          } else {
-            comboFarmPhase = '下一发是好结果，等魔力打命运之手（' + Math.floor(M.magic) + '/' + fthofCost + '）';
-          }
-        } else if (M.magic >= p.cheapCost + fthofCost) {
-          // 预测不佳且魔力富裕 → 用最低耗魔法术刷序列
-          fthofCastQuiet(M, p.cheap);
-          comboFarmPhase = 'Frenzy 在场，刷序列中（下一发：' + (p.casts[0].win ? '' : '✘') + p.casts[0].force + '）';
-        } else {
-          comboFarmPhase = 'Frenzy 在场，下一发不佳且魔力不足刷序列，等待';
+    function gzTick() {
+      if (!gzOn) return;
+      if (!clickTimer) startClicker(); // 点击是 Devastation 的收益出口
+      if (!Game.hasGod || !Game.hasGod('ruin')) { gzStop('Godzamok 已不在万神殿槽位'); return; }
+      var ps = window.PlaySound;
+      window.PlaySound = function () {}; // 屏蔽买卖音效
+      try {
+        for (var c = 0; c < GZ_CYCLES_PER_TICK; c++) {
+          if (gzCycleOnce() <= 0) break;
+          gzCycles++;
         }
-        updateComboFarmBtn();
-        return;
-      }
-
-      // 3. 无 Frenzy → 龙之宝珠卖楼召唤金饼干刷 Frenzy（主循环自动点爆出效果）
-      if (Game.shimmerTypes && Game.shimmerTypes['golden'] && Game.shimmerTypes['golden'].n > 0) return; // 场上有饼干，等主循环点
-      if (Game.auraMult('Dragon Orbs') > 0) {
-        var hb = farmTopBuilding();
-        if (!hb) { comboFarmPhase = '没有建筑可卖'; updateComboFarmBtn(); return; }
-        if (hb.amount >= 2 || hb.getPrice() <= Game.cookies) {
-          hb.sell(1);
-          if (hb.getPrice() <= Game.cookies) hb.buy(1);
-          comboFarmPhase = '龙之宝珠召唤金饼干中（刷 Frenzy）';
-        } else {
-          comboFarmPhase = '攒钱买回 ' + hb.name + ' 中';
-        }
-      } else {
-        comboFarmPhase = '等待自然金饼干（龙之宝珠未装备，需龙 23 级）';
-      }
-      updateComboFarmBtn();
+      } catch (e) {}
+      window.PlaySound = ps;
+      updateGzBtn();
     }
 
-    function comboFarmStart() {
-      if (comboFarmOn) return;
-      if (farmActive) {
-        try { if (Game.Notify) Game.Notify('刷哥斯马克', '刷金模式运行中，先停止再开本模式'); } catch (e) {}
-        return;
-      }
-      var err = comboFarmSlotGodzamok();
+    function gzStart() {
+      if (gzOn) return;
+      var err = gzSlotGodzamok();
       if (err) {
-        console.warn('[AutoPilot ComboFarm] 无法启动：' + err);
+        console.warn('[AutoPilot GZ] 无法启动：' + err);
         try { if (Game.Notify) Game.Notify('刷哥斯马克', err); } catch (e) {}
         return;
       }
-      comboFarmOn = true;
-      comboFarmCombos = 0;
-      comboFarmInCombo = false;
+      gzOn = true;
+      gzCycles = 0;
+      gzSoldTotal = 0;
       startClicker();
-      // 装备刷 buff 光环（龙等级不足则 farmSetAura 内部返回 false，退化为等自然金饼干）
-      farmSetAura(0, CF_AURA_ON[0]);
-      farmSetAura(1, CF_AURA_ON[1]);
-      comboFarmTimer = setInterval(function () { try { comboFarmTick(); } catch (e) {} }, 300);
-      updateComboFarmBtn();
-      console.log('[AutoPilot ComboFarm] 已启动：Godzamok 钻石槽，循环刷 buff 打连招');
-      try { if (Game.Notify) Game.Notify('刷哥斯马克 启动', 'Godzamok 已入钻石槽；循环：刷 Frenzy → 命运之手 → 连招自动爆发'); } catch (e) {}
+      gzTimer = setInterval(function () { try { gzTick(); } catch (e) {} }, GZ_TICK_MS);
+      updateGzBtn();
+      console.log('[AutoPilot GZ] 开始叠层：Godzamok 钻石位，' + GZ_TICK_MS + 'ms×' + GZ_CYCLES_PER_TICK + ' 轮全卖全买');
+      try { if (Game.Notify) Game.Notify('刷哥斯马克 启动', 'Godzamok 已入钻石槽，高频买卖叠 Devastation 中'); } catch (e) {}
     }
 
-    function comboFarmStop(reason) {
-      if (!comboFarmOn) return;
-      comboFarmOn = false;
-      if (comboFarmTimer) { clearInterval(comboFarmTimer); comboFarmTimer = null; }
-      farmSetAura(0, CF_AURA_OFF[0]);
-      farmSetAura(1, CF_AURA_OFF[1]);
+    function gzStop(reason) {
+      if (!gzOn) return;
+      gzOn = false;
+      if (gzTimer) { clearInterval(gzTimer); gzTimer = null; }
       if (!enabled) stopClicker();
-      updateComboFarmBtn();
-      console.log('[AutoPilot ComboFarm] 已停止：' + reason + '（完成连招 ' + comboFarmCombos + ' 次）');
-      try { if (Game.Notify) Game.Notify('刷哥斯马克 停止', reason + '（连招 ×' + comboFarmCombos + '）'); } catch (e) {}
+      updateGzBtn();
+      var deva = Game.hasBuff && Game.hasBuff('Devastation');
+      console.log('[AutoPilot GZ] 停止：' + reason + '（循环 ' + gzCycles + ' 次，共卖出 ' + gzSoldTotal + ' 座' +
+        (deva ? '，当前 Devastation ×' + deva.multClick.toFixed(1) : '') + '）');
+      try { if (Game.Notify) Game.Notify('刷哥斯马克 停止', reason + '（循环 ×' + gzCycles + '）'); } catch (e) {}
     }
 
-    function comboFarmStatus() {
-      return { on: comboFarmOn, phase: comboFarmPhase, combos: comboFarmCombos, inCombo: comboFarmInCombo };
-    }
-
-    function createComboFarmBtn() {
-      comboFarmBtn = document.createElement('div');
-      comboFarmBtn.id = 'cookie-autopilot-combofarm-btn';
-      comboFarmBtn.style.cssText = 'position:fixed;top:10px;right:226px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
-      updateComboFarmBtn();
-      comboFarmBtn.onclick = function () {
-        if (comboFarmOn) comboFarmStop('手动停止');
-        else comboFarmStart();
+    function gzStatus() {
+      var deva = Game.hasBuff && Game.hasBuff('Devastation');
+      return {
+        on: gzOn,
+        cycles: gzCycles,
+        soldTotal: gzSoldTotal,
+        devastation: deva ? { multClick: deva.multClick, timeLeft: Math.ceil(deva.time / Game.fps) + 's' } : null
       };
-      document.body.appendChild(comboFarmBtn);
     }
-    function updateComboFarmBtn() {
-      if (!comboFarmBtn) return;
-      if (comboFarmOn) {
-        comboFarmBtn.textContent = comboFarmInCombo ? '💥连招中' : '哥斯马克中';
-        comboFarmBtn.style.background = comboFarmInCombo ? '#d4a017' : '#b45309';
-        comboFarmBtn.title = comboFarmPhase;
+
+    function createGzBtn() {
+      gzBtn = document.createElement('div');
+      gzBtn.id = 'cookie-autopilot-gz-btn';
+      gzBtn.style.cssText = 'position:fixed;top:10px;right:226px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      updateGzBtn();
+      gzBtn.onclick = function () {
+        if (gzOn) gzStop('手动停止');
+        else gzStart();
+      };
+      document.body.appendChild(gzBtn);
+    }
+    function updateGzBtn() {
+      if (!gzBtn) return;
+      if (gzOn) {
+        var deva = Game.hasBuff && Game.hasBuff('Devastation');
+        gzBtn.textContent = deva ? 'Devast ×' + deva.multClick.toFixed(0) : '叠层中×' + gzCycles;
+        gzBtn.style.background = '#b45309';
       } else {
-        comboFarmBtn.textContent = '刷哥斯马克';
-        comboFarmBtn.style.background = '#6b7280';
-        comboFarmBtn.title = '';
+        gzBtn.textContent = '刷哥斯马克';
+        gzBtn.style.background = '#6b7280';
       }
     }
-    function removeComboFarmUI() {
-      if (comboFarmTimer) clearInterval(comboFarmTimer);
-      comboFarmOn = false;
-      if (comboFarmBtn && comboFarmBtn.parentNode) comboFarmBtn.parentNode.removeChild(comboFarmBtn);
-      comboFarmBtn = null;
+    function removeGzUI() {
+      if (gzTimer) clearInterval(gzTimer);
+      gzOn = false;
+      if (gzBtn && gzBtn.parentNode) gzBtn.parentNode.removeChild(gzBtn);
+      gzBtn = null;
     }
 
     // ---------- 花园自动育种（全自动集齐图鉴；杂交最优留空布局） ----------
@@ -1880,7 +1823,7 @@
         removeCpsUI();
         removeFthofUI();
         removeFarmUI();
-        removeComboFarmUI();
+        removeGzUI();
         removeGardenUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
@@ -1926,10 +1869,10 @@
         stop: function () { farmFinish('手动取消', false); },
         status: farmStatus
       },
-      comboFarm: {
-        start: comboFarmStart,
-        stop: function () { comboFarmStop('手动停止'); },
-        status: comboFarmStatus
+      gz: {
+        start: gzStart,
+        stop: function () { gzStop('手动停止'); },
+        status: gzStatus
       },
       garden: {
         start: function () { gardenSetOn(true); },
@@ -1954,14 +1897,14 @@
     createModeBtn();
     createMasterBtn();
     createFarmBtn();
-    createComboFarmBtn();
+    createGzBtn();
     createGardenBtn();
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.9.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金/刷哥斯马克（全自动连招），紫=总开关，绿/蓝=模式');
+    console.log('[AutoPilot v5.9.1] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金/刷哥斯马克（Devastation 叠层），紫=总开关，绿/蓝=模式');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.9.0 已启动', '新增：刷哥斯马克全自动连招（Godzamok 自动入钻石槽，循环刷 buff 爆发）');
+      if (Game.Notify) Game.Notify('AutoPilot v5.9.1 已启动', '刷哥斯马克：纯叠层器（高频全卖全买，按钮实时显示 Devastation 倍率）');
     } catch (e) {}
   }
 })();
