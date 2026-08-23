@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.10.2 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.10.3 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.10.3：命运面板新增延长时间（Stretch Time）成败预测——按实际连招顺序偏移：
+ *          打 1 发命运之手后施放 = 种子 #N+1，打 2 发后 = 种子 #N+2，两次都给出
  * v5.10.2：刷哥斯马克结束时播报本次最高 Devastation 倍率（峰值跟踪 + Notify/控制台，
  *          status 里新增 peak 与历史最佳 bestEver）
  * v5.10.1：Godzamok 卖楼保护小游戏建筑（农场/神殿/魔法塔/银行）——卖掉神殿会
@@ -923,6 +925,13 @@
         fthofPredictOne(M, spell, M.spellsCastTotal),
         fthofPredictOne(M, spell, M.spellsCastTotal + 1)
       ];
+      // 延长时间法术：连招顺序是「先打命运之手，再放延长」→ 预测偏移 N+1（打 1 发后）
+      // 与 N+2（打 2 发后）。Stretch Time 无 failFunc，失败率不吃场上金饼干加成。
+      var stSpell = M.spells['stretch time'];
+      var stretch = stSpell ? [
+        predictSpellWin(M, stSpell, M.spellsCastTotal + 1),
+        predictSpellWin(M, stSpell, M.spellsCastTotal + 2)
+      ] : null;
       // 消耗最低的法术（用于刷序列；任何法术施放都会推进 spellsCastTotal）
       var cheap = null, cheapCost = Infinity;
       for (var k in M.spells) {
@@ -935,6 +944,7 @@
         goldOnScreen: gn,
         cheap: cheap,
         cheapCost: cheapCost,
+        stretch: stretch,
         magic: M.magic,
         magicM: M.magicM,
         castTotal: M.spellsCastTotal
@@ -1031,6 +1041,19 @@
           '（' + (p.cheap ? (p.cheap.name || '最廉价法术') : '—') + '）<br>';
         html += '场上金饼干 ×' + p.goldOnScreen + (p.goldOnScreen > 0 ? '（每只 +15% 失败率）' : '');
         html += '</div>';
+        // 延长时间法术成败预测（按连招实际顺序偏移：打 1 发命运后 = N+1，打 2 发后 = N+2）
+        if (p.stretch) {
+          html += '<div style="padding:6px 8px;background:rgba(0,0,0,0.35);border-radius:4px;margin-bottom:6px;">';
+          html += '延长时间（Stretch Time）成败预测：<br>';
+          var stLabels = ['命运×1 后施放', '命运×2 后施放'];
+          for (var si = 0; si < 2; si++) {
+            var stc = p.stretch[si];
+            html += '<span style="color:#888;">├ </span>' + stLabels[si] + '：<b style="color:' +
+              (stc.win ? '#6f6' : '#f66') + ';">' + (stc.win ? '✔ 成功' : '✘ 失败（会把 buff 缩短 20%！）') + '</b><br>';
+          }
+          html += '<span style="color:#888;font-size:11px;">失败率 ' + (p.stretch[0].failChance * 100).toFixed(1) +
+            '%（延长术不吃金饼干加成）　种子 #' + p.stretch[0].castNum + '/#' + p.stretch[1].castNum + '</span></div>';
+        }
         // 刷序列按钮（面板每 500ms 重绘，用 inline 事件挂到对外接口上）
         var rerolling = !!fthofRerollTimer;
         html += '<div style="margin-bottom:6px;">' +
@@ -1247,13 +1270,14 @@
     // 连招窗口里等于自残。不自动刷序列（那会移动命运之手预测序列）。
     var ultBtn = null;
 
-    // 预测任意法术下一发的成败（只读，不改变任何状态）
-    function predictSpellWin(M, spell) {
+    // 预测任意法术在第 castNum 次施放的成败（只读，不改变任何状态）
+    function predictSpellWin(M, spell, castNum) {
+      if (typeof castNum === 'undefined') castNum = M.spellsCastTotal;
       var failChance = M.getFailChance(spell);
-      Math.seedrandom(Game.seed + '/' + M.spellsCastTotal);
+      Math.seedrandom(Game.seed + '/' + castNum);
       var win = Math.random() < (1 - failChance);
       Math.seedrandom();
-      return win;
+      return { win: win, failChance: failChance, castNum: castNum };
     }
 
     function ultimateBurst() {
@@ -1298,7 +1322,7 @@
         var cost = M.getSpellCost(spell);
         if (buffsN === 0) skipped.push('延长 buff（当前无 buff）');
         else if (M.magic < cost) skipped.push('延长 buff（魔力不足 ' + Math.floor(M.magic) + '/' + cost + '）');
-        else if (!predictSpellWin(M, spell)) skipped.push('延长 buff（预测本次施放失败，已跳过——可在命运面板手动刷序列）');
+        else if (!predictSpellWin(M, spell).win) skipped.push('延长 buff（预测本次施放失败，已跳过——可在命运面板手动刷序列）');
         else {
           fthofCastQuiet(M, spell);
           done.push('延长 buff +10%（注意：命运之手预测序列已前移一格）');
