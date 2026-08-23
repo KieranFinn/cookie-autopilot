@@ -688,13 +688,13 @@
       cpsBtn = document.createElement('div');
       cpsBtn.id = 'cookie-autopilot-cps-btn';
       cpsBtn.textContent = 'CpS';
-      cpsBtn.style.cssText = 'position:fixed;top:10px;right:158px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;background:#6b7280;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      cpsBtn.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;background:#6b7280;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
       cpsBtn.onclick = function () { toggleCpsPanel(); };
       document.body.appendChild(cpsBtn);
 
       cpsPanel = document.createElement('div');
       cpsPanel.id = 'cookie-autopilot-cps-panel';
-      cpsPanel.style.cssText = 'display:none;position:fixed;top:36px;right:10px;z-index:99998;width:420px;max-height:80vh;overflow-y:auto;background:rgba(10,10,20,0.92);color:#eee;padding:8px;border-radius:6px;border:1px solid #444;font-family:inherit;font-size:12px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.5);';
+      cpsPanel.style.cssText = 'display:none;position:fixed;top:36px;left:10px;z-index:99998;width:420px;max-height:80vh;overflow-y:auto;background:rgba(10,10,20,0.92);color:#eee;padding:8px;border-radius:6px;border:1px solid #444;font-family:inherit;font-size:12px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.5);';
       document.body.appendChild(cpsPanel);
 
       cpsTimer = setInterval(function () {
@@ -766,9 +766,9 @@
     createMasterBtn();
     createCpsBtn();
 
-    console.log('[AutoPilot v5.1.9] 已启动 ✔ 模式=' + CFG.mode + ' | 右上角：CpS=增益明细，紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.setEnabled()/.setMode()/.cps.toggle()/.stop()');
+    console.log('[AutoPilot v5.1.9] 已启动 ✔ 模式=' + CFG.mode + ' | 左上角：CpS=增益明细 | 右上角：紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.setEnabled()/.setMode()/.cps.toggle()/.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.1.9 已启动', '新增：CpS 增益明细面板（橙色按钮）| 嬤虫：仅满员时捏最后一只');
+      if (Game.Notify) Game.Notify('AutoPilot v5.1.9 已启动', '新增：CpS 增益明细面板（左上角橙色按钮）| 嬤虫：仅满员时捏最后一只');
     } catch (e) {}
   }
 })();
