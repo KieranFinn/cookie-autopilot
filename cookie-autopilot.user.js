@@ -2,7 +2,7 @@
 // @name         Cookie AutoPilot
 // @namespace    cookie-autopilot
 // @version      5.1.6
-// @description  Cookie Clicker 全自动：连点+金饼干+红饼干+幸运签自动点击+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效
+// @description  Cookie Clicker 全自动：连点+金饼干+红饼干+幸运签自动点击+CM最优购买(strict.fast双模式切换+浮动按钮+bug修复)+固定100ms节拍+嬤虫满员轮替(只捏最肥一只,飞升前全捏)+屏蔽点击音效+季节升级黑名单
 // @match        https://orteil.dashnet.org/cookieclicker/*
 // @match        http://orteil.dashnet.org/cookieclicker/*
 // @run-at       document-idle
@@ -19,7 +19,7 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
- * v5.1.6：修复 CollectWrinklers() 误杀所有虫（它实际是"杀死全部"不是"收集死虫"）
+ * v5.1.6：修复 CollectWrinklers() 误杀所有虫 + 季节升级全部黑名单
  * v5.1.5：buyTimes 环形缓冲区、Fortune 单双引号兼容、scanAll 缓存、
  *          Notify 异常防护、变量名去重
  * v5.1.4：修复 Fortune 检测（查两个 ticker + class="fortune"）、增加红饼干（wrath）自动点击
@@ -38,7 +38,7 @@
     maxBuysPerTick: 200       // fast 模式单拍连环购买上限（strict 模式忽略）
   };
 
-  // 永远不自动购买的升级（会改变黄金饼干机制、开关型、纯亏）
+  // 永远不自动购买的升级（会改变黄金饼干机制、开关型、纯亏、季节相关）
   var BLACKLIST = [
     'Elder covenant',           // 永久安抚阿嬷，-5% 产量，血亏
     'Elder Pledge',             // 暂时安抚阿嬷（想手动用时自己买）
@@ -49,7 +49,14 @@
     'Shimmering veil [off]',    // 开关型：关闭闪光面纱保护
     'Golden switch [off]',      // 开关型：恢复黄金饼干（策略性）
     'Golden switch [on]',       // 开关型：关闭黄金饼干换 +50% CpS（策略性）
-    'Sugar frenzy'              // 糖狂潮（一次性爆发，不宜自动）
+    'Sugar frenzy',             // 糖狂潮（一次性爆发，不宜自动）
+    // --- 季节切换开关（全部拦截）---
+    'Season switcher',          // 天堂升级：解锁季节切换能力
+    'Festive biscuit',          // 触发 Christmas 季节
+    'Ghostly biscuit',          // 触发 Halloween 季节
+    'Lovesick biscuit',         // 触发 Valentine 季节
+    "Fool's biscuit",           // 触发 Business Day 季节
+    'Bunny biscuit'             // 触发 Easter 季节
   ];
 
   // ---------- 启动检查 ----------
@@ -171,6 +178,7 @@
             var info = CMd.Upgrades[name];
             var u = Game.Upgrades[name];
             if (!info || !u || u.bought || !u.unlocked) return;
+            if (u.season) return;           // 拦截所有季节相关升级（含节日饼干）
             if (info.colour === 'Gray') return;
             if (BLACKLIST.indexOf(name) !== -1) return;
             var price = u.getPrice ? u.getPrice() : u.basePrice;
