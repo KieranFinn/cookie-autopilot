@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.1.6 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.7 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,7 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.1.7：集成连招辅助（buff 检测 + Godzamok 一键卖建筑 + 连招统计）
  * v5.1.6：修复 CollectWrinklers() 误杀所有虫 + 季节升级全部黑名单 + 虫槽位越界修复
  * v5.1.5：buyTimes 环形缓冲区、Fortune 单双引号兼容、scanAll 缓存、
  *          Notify 异常防护、变量名去重
@@ -302,6 +303,9 @@
             }
           }
         }
+
+        // --- 连招辅助：检测 buff 叠加 ---
+        try { checkCombo(); } catch (e) {}
       } catch (e) {}
       schedule();
     }
@@ -309,6 +313,79 @@
     function schedule() {
       if (stopped) return;
       tickTimer = setTimeout(tick, CFG.tickMs);
+    }
+
+    // ---------- 连招辅助 ----------
+    var comboAlerted = false;
+    var comboHistory = [];
+
+    function checkCombo() {
+      if (!Game.buffs) return;
+      var buffs = Game.buffs;
+      var hasF = false, hasBS = false, hasCF = false, hasDF = false, hasEF = false;
+      var parts = [];
+
+      for (var i = 0; i < buffs.length; i++) {
+        var b = buffs[i];
+        if (b.name === 'Frenzy') { hasF = true; }
+        else if (b.name === 'Click frenzy') { hasCF = true; }
+        else if (b.name === 'Dragonflight') { hasDF = true; }
+        else if (b.name === 'Elder frenzy') { hasEF = true; }
+        else if (b.name.indexOf('Building special') !== -1) { hasBS = true; }
+      }
+
+      if (hasF) parts.push('F');
+      if (hasBS) parts.push('BS');
+      if (hasCF) parts.push('CF');
+      if (hasDF) parts.push('DF');
+      if (hasEF) parts.push('EF');
+
+      var level = (hasF ? 1 : 0) + (hasBS ? 2 : 0) + (hasCF || hasDF ? 3 : 0) + (hasEF ? 4 : 0);
+
+      // 高价值连招提醒（F+CF 或更高）
+      if (level >= 4 && !comboAlerted) {
+        comboAlerted = true;
+        var msg = parts.join('+') + ' 连招触发！';
+        console.log('[AutoPilot Combo] 🚨 ' + msg);
+        try {
+          if (Game.Notify) Game.Notify('连招辅助 🚨', msg + ' 输入 CookieAutoPilot.combo.sellForGodzamok() 卖建筑触发 Godzamok');
+        } catch (e) {}
+      }
+
+      // 所有 buff 消失后重置提醒状态
+      if (level === 0) comboAlerted = false;
+    }
+
+    function sellForGodzamok() {
+      if (!Game.ObjectsById) return [];
+      var totalCps = Game.cookiesPs;
+      if (totalCps <= 0) return [];
+      var sold = [];
+      Game.ObjectsById.forEach(function (b) {
+        if (b.name === 'Wizard tower') return; // 保护魔法塔
+        var bCps = b.storedTotalCps || 0;
+        // 只卖产生 <2% CpS 且数量 >0 的建筑
+        if (bCps < totalCps * 0.02 && b.amount > 0) {
+          var before = b.amount;
+          b.sell(b.amount);
+          sold.push(b.name + ' x' + before);
+        }
+      });
+      var msg = sold.length > 0 ? '已卖: ' + sold.join(', ') : '没有符合 <2% CpS 条件的建筑可卖';
+      console.log('[AutoPilot Combo] ' + msg);
+      comboHistory.push({ time: Date.now(), action: 'sellForGodzamok', sold: sold });
+      return sold;
+    }
+
+    function getComboStatus() {
+      if (!Game.buffs) return [];
+      return Game.buffs.map(function (b) {
+        return { name: b.name, timeLeft: Math.ceil(b.time / Game.fps) + 's', multiplier: b.mult || '-' };
+      });
+    }
+
+    function getComboHistory() {
+      return comboHistory.slice(-20); // 最近 20 条
     }
 
     schedule();
@@ -333,6 +410,11 @@
           lastBuyAgoMs: lastBuy ? Date.now() - lastBuy : null
         };
       },
+      combo: {
+        sellForGodzamok: sellForGodzamok,
+        status: getComboStatus,
+        history: getComboHistory
+      },
       setMode: function (m) {
         if (m !== 'strict' && m !== 'fast') {
           console.warn('[AutoPilot] 模式必须是 strict 或 fast');
@@ -349,9 +431,9 @@
 
     createModeBtn();
 
-    console.log('[AutoPilot v5.1.6] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
+    console.log('[AutoPilot v5.1.7] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.1.6 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+      if (Game.Notify) Game.Notify('AutoPilot v5.1.7 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
     } catch (e) {}
   }
 })();
