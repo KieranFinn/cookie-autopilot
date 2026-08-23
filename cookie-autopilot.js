@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.4.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.5.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,13 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.5.0：新增花园自动育种（运行时暴力探测游戏原生 M.getMuts 动态发现配方，
+ *          爬山法搜索「空格变异概率总和最大」的留空布局，全自动集齐 34 种图鉴；
+ *          meddleweed 杂草/brownMold·crumbspore 孢子特例处理，育种期自动换木屑土）；
+ *          刷金模式启动前先进入 Elder Pledge 长者誓约（临时安抚，非 Covenant 的 -5%），
+ *          杜绝刷出红饼干，到期自动续誓约；
+ *          修复建筑特赐 buff 检测（buff.name 实为 High-five/Congregation 等随机名，
+ *          改用 buff.type.name==='building buff' 识别，刷金出建筑 buff 现在会正常停止）
  * v5.4.0：新增「刷金饼干」独立模式（龙之宝珠+飞龙在天循环卖建筑召唤金饼干，
  *          出正向增益即换回 Radiant Appetite+牛奶之息并结束；期间暂停主自动化、
  *          保留大饼干连点）
@@ -394,7 +401,7 @@
         else if (b.name === 'Click frenzy') { hasCF = true; }
         else if (b.name === 'Dragonflight') { hasDF = true; }
         else if (b.name === 'Elder frenzy') { hasEF = true; }
-        else if (b.name && b.name.indexOf('Building special') !== -1) { hasBS = true; }
+        else if ((b.type && b.type.name === 'building buff') || (b.name && b.name.indexOf('Building special') !== -1)) { hasBS = true; } // buff.name 实为 High-five 等随机名，须靠 buffType 识别
       }
 
       if (hasF) parts.push('F');
@@ -896,9 +903,23 @@
         for (var k = 0; k < FARM_GOOD_BUFFS.length; k++) {
           if (b.name === FARM_GOOD_BUFFS[k]) return b.name;
         }
-        if (b.name.indexOf('Building special') !== -1) return b.name;
+        // 建筑特赐：buff.name 是 'High-five'/'Congregation' 等随机名（main.js
+        // goldenCookieBuildingBuffs），只能靠 buff.type.name==='building buff' 识别
+        if (b.type && b.type.name === 'building buff') return b.name;
       }
       return '';
+    }
+
+    // 进入/维持长者誓约（Elder Pledge 临时安抚，非 Elder Covenant 永久 -5%）：
+    // elderWrath=0 期间金饼干不会刷成红饼干（main.js shimmer 初始化 wrath 判定）。
+    // 注意：买誓约会触发游戏自带的 CollectWrinklers() 收全部嬤虫（游戏机制，非本脚本行为）
+    function farmEnsurePledge() {
+      if (Game.elderWrath <= 0) return true; // 未开启阿嬷浩劫，无需誓约
+      var up = Game.Upgrades['Elder Pledge'];
+      if (!up || !up.unlocked) return false;
+      if (up.getPrice() > Game.cookies) return false;
+      up.buy(true);
+      return Game.elderWrath === 0;
     }
 
     function farmStart() {
@@ -910,6 +931,12 @@
       }
       if (!farmTopBuilding()) {
         try { if (Game.Notify) Game.Notify('刷金饼干', '没有任何建筑可卖，无法启动'); } catch (e) {}
+        return;
+      }
+      // 先进入长者誓约（Elder Pledge 临时安抚），确保刷金期间不出红饼干
+      if (Game.elderWrath > 0 && !farmEnsurePledge()) {
+        console.warn('[AutoPilot Farm] 无法进入长者誓约（Elder Pledge 未解锁或买不起）');
+        try { if (Game.Notify) Game.Notify('刷金饼干', '阿嬷浩劫进行中，但 Elder Pledge 未解锁或买不起，无法安抚'); } catch (e) {}
         return;
       }
       farmActive = true;
@@ -928,6 +955,12 @@
     function farmTick() {
       if (!farmActive) return;
       if (!clickTimer) startClicker(); // 防止总开关中途把连点停了
+
+      // 维持长者誓约：30 分钟到期后阿嬷浩劫恢复，需续誓约防红饼干
+      if (Game.elderWrath > 0) {
+        if (farmEnsurePledge()) farmPhase = '已续长者誓约';
+        else { farmPhase = '誓约到期且买不起 Elder Pledge，暂停'; updateFarmBtn(); return; }
+      }
 
       // 1. 场上有金饼干 → 点爆并判定结果
       var shimmers = Game.shimmers;
@@ -1014,6 +1047,462 @@
       farmBtn = null;
     }
 
+    // ---------- 花园自动育种（全自动集齐图鉴；杂交最优留空布局） ----------
+    // 原理：游戏全部杂交配方集中在 minigameGarden.js 的 M.getMuts(neighs, neighsM)
+    // 纯函数中。本模块在运行时对所有已解锁植物的双亲组合暴力探测 getMuts，
+    // 动态得出每个未解锁植物的配方与概率（不硬编码，游戏改配方也不失效）；
+    // 再用爬山法在当前花园尺寸上搜索「空格目标变异概率总和最大」的播种图——
+    // 变异只发生在空格上（8 邻域判定），所以最优解自然是不播满、为杂交留空。
+    // 特例：meddleweed 靠空地自然长杂草；brownMold/crumbspore 靠挖除 meddleweed
+    // 掉孢子（onKill：20%×age/100，故 age≥80 就挖防止老死）；queenbeetLump
+    // 不可种植只能变异。种植花费最多动用存款的 5%。
+    var gardenBtn = null, gardenPanel = null;
+    var gardenTimer = null;
+    var gardenOn = false;
+    var gardenTarget = null;      // 当前目标植物 key
+    var gardenTargetType = '';    // 'mut' 杂交 | 'weed' 等杂草 | 'spore' 挖草掉孢子
+    var gardenLayout = null;      // {cells, tiles, idxOf, species, score, planted, qualTiles, bestP}
+    var gardenPhase = '';
+    var gardenPickCache = null;   // {key, pick} —— 解锁数/农场等级不变则复用
+    var gardenRecipeCache = null; // {key, recipes}
+
+    function gardenM() {
+      var F = Game.Objects['Farm'];
+      if (!F || !F.minigame || !F.minigame.getMuts || !F.minigame.plot) return null;
+      return F.minigame;
+    }
+
+    // 用模拟邻居统计探测 getMuts：neighs 与 neighsM 同值（假设亲本全成熟，
+    // 同时满足两类判定——多数配方看成熟邻居，少数如 duketater/shriekbulb 看全部邻居）
+    function gardenProbe(M, counts) {
+      var neighs = {}, neighsM = {};
+      for (var i in M.plants) { neighs[i] = 0; neighsM[i] = 0; }
+      for (var k in counts) { neighs[k] = counts[k]; neighsM[k] = counts[k]; }
+      return M.getMuts(neighs, neighsM);
+    }
+
+    // 动态发现配方：遍历亲本组合，为每个未解锁植物记录概率最高的组合
+    function gardenComputeRecipes(M) {
+      var unlockedN = 0;
+      for (var i in M.plants) if (M.plants[i].unlocked) unlockedN++;
+      var ck = unlockedN + '/' + (M.parent ? M.parent.level : 0);
+      if (gardenRecipeCache && gardenRecipeCache.key === ck) return gardenRecipeCache.recipes;
+
+      var pool = [];
+      for (var i in M.plants) {
+        var p = M.plants[i];
+        if (p.unlocked && p.plantable !== false) pool.push(p.key);
+      }
+      var recipes = {};
+      var COUNTS_1 = [1, 2, 3, 4, 5, 6, 7, 8]; // 单亲本（覆盖 ≥2/≥3/≥4/≥5/≥8 阈值）
+      var COUNTS_2 = [1, 2, 3, 4];             // 双亲本（覆盖 everdaisy 的 3+3 等）
+      function register(need) {
+        var muts = gardenProbe(M, need);
+        var np = 0; for (var kk in need) np += need[kk];
+        for (var m = 0; m < muts.length; m++) {
+          var key = muts[m][0], prob = muts[m][1];
+          if (!M.plants[key] || M.plants[key].unlocked) continue;
+          var cur = recipes[key];
+          if (!cur || prob > cur.prob || (prob === cur.prob && np < cur.np)) {
+            recipes[key] = { need: need, prob: prob, np: np };
+          }
+        }
+      }
+      for (var a = 0; a < pool.length; a++) {
+        for (var c1 = 0; c1 < COUNTS_1.length; c1++) {
+          var need1 = {}; need1[pool[a]] = COUNTS_1[c1];
+          register(need1);
+        }
+        for (var b = a + 1; b < pool.length; b++) {
+          for (var ca = 0; ca < COUNTS_2.length; ca++) {
+            for (var cb = 0; cb < COUNTS_2.length; cb++) {
+              var need2 = {}; need2[pool[a]] = COUNTS_2[ca]; need2[pool[b]] = COUNTS_2[cb];
+              register(need2);
+            }
+          }
+        }
+      }
+      gardenRecipeCache = { key: ck, recipes: recipes };
+      return recipes;
+    }
+
+    // 爬山法搜索最优播种图：空格对目标的有效变异概率总和最大。
+    // 完全无贡献的亲本会被同分修剪（更少亲本、更省钱的图）；
+    // 单格有效概率 = p目标/(1+Σp其它)，模拟游戏从通过的变异中均匀 choose 的稀释。
+    function gardenOptimize(M, need, target) {
+      var tiles = [], idxOf = {};
+      for (var y = 0; y < 6; y++) for (var x = 0; x < 6; x++) {
+        if (M.isTileUnlocked(x, y)) { idxOf[x + ',' + y] = tiles.length; tiles.push([x, y]); }
+      }
+      var species = []; for (var k in need) species.push(k);
+      var nS = species.length, n = tiles.length;
+
+      function tileScore(ti, cs) {
+        if (cs[ti] !== 0) return 0;
+        var x = tiles[ti][0], y = tiles[ti][1];
+        var counts = {}, any = false;
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            var j = idxOf[(x + dx) + ',' + (y + dy)];
+            if (j === undefined) continue;
+            if (cs[j] > 0) { var kk = species[cs[j] - 1]; counts[kk] = (counts[kk] || 0) + 1; any = true; }
+          }
+        }
+        if (!any) return 0;
+        var pT = tileRawProb(counts);
+        if (pT > 0) return pT;
+        // 未满足条件：给「朝配方靠近的程度」微小部分分，为爬山法提供梯度
+        // （否则 queenbeetLump 需 8 邻居、everdaisy 需 3+3 这类高门槛配方困在零梯度平台）
+        var got = 0, req = 0;
+        for (var s in need) { req += need[s]; got += Math.min(counts[s] || 0, need[s]); }
+        return req > 0 ? (got / req) * 0.000001 : 0;
+      }
+
+      // 空格对目标的有效变异概率（不含部分分）：p目标/(1+Σp其它)，模拟游戏均匀 choose 的稀释
+      function tileRawProb(counts) {
+        var muts = gardenProbe(M, counts);
+        var pT = 0, pO = 0;
+        for (var m = 0; m < muts.length; m++) {
+          if (muts[m][0] === target) { if (muts[m][1] > pT) pT = muts[m][1]; } else pO += muts[m][1];
+        }
+        return pT > 0 ? pT / (1 + pO) : 0;
+      }
+
+      // 供最终评估用：只统计真正满足变异条件的空格
+      function tileProb(ti, cs) {
+        if (cs[ti] !== 0) return 0;
+        var x = tiles[ti][0], y = tiles[ti][1];
+        var counts = {}, any = false;
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          var j = idxOf[(x + dx) + ',' + (y + dy)];
+          if (j === undefined) continue;
+          if (cs[j] > 0) { var kk = species[cs[j] - 1]; counts[kk] = (counts[kk] || 0) + 1; any = true; }
+        }
+        if (!any) return 0;
+        return tileRawProb(counts);
+      }
+
+      // 局部得分：改动一格只影响自身 + 8 邻格
+      function localScore(ti, cs) {
+        var s = tileScore(ti, cs);
+        var x = tiles[ti][0], y = tiles[ti][1];
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          var j = idxOf[(x + dx) + ',' + (y + dy)];
+          if (j !== undefined) s += tileScore(j, cs);
+        }
+        return s;
+      }
+
+      function fullProb(cs) { var s = 0; for (var i = 0; i < n; i++) s += tileProb(i, cs); return s; }
+      function plantedCount(cs) { var c = 0; for (var i = 0; i < n; i++) if (cs[i] > 0) c++; return c; }
+
+      var best = null, bestProb = -1, bestPlanted = 0;
+      var RESTARTS = 6;
+      for (var r = 0; r < RESTARTS; r++) {
+        var cur = new Array(n);
+        for (var i = 0; i < n; i++) {
+          if (r === 0) cur[i] = 0;                                    // 空园起步
+          else if (r < 3) cur[i] = Math.random() < 0.4 ? 1 + Math.floor(Math.random() * nS) : 0; // 随机
+          else if (r === 3) { var tx = tiles[i][0], ty = tiles[i][1]; cur[i] = 1 + ((tx + ty) % 2) % nS; } // 棋盘交错（破双子阈值平台）
+          else if (r === 4) cur[i] = 1;                               // 全种亲本A（破 8 邻居平台）
+          else cur[i] = nS;                                           // 全种亲本B
+        }
+        var improved = true, guard = 0;
+        while (improved && guard++ < 80) {
+          improved = false;
+          for (var ci = 0; ci < n; ci++) {
+            for (var st = 0; st <= nS; st++) {
+              if (st === cur[ci]) continue;
+              var before = localScore(ci, cur);
+              var removing = cur[ci] > 0 && st === 0;
+              var old = cur[ci]; cur[ci] = st;
+              var after = localScore(ci, cur);
+              var delta = after - before;
+              // 严格概率优先；完全无贡献的亲本允许修剪（同分删株，省钱省维护）
+              if (delta > 1e-12 || (removing && Math.abs(delta) <= 1e-12)) { improved = true; }
+              else cur[ci] = old;
+            }
+          }
+        }
+        var prob = fullProb(cur), pc = plantedCount(cur);
+        if (prob > bestProb + 1e-12 || (best && Math.abs(prob - bestProb) <= 1e-12 && pc < bestPlanted)) {
+          bestProb = prob; best = cur; bestPlanted = pc;
+        }
+      }
+      var qualTiles = 0, bestP = 0;
+      for (var i2 = 0; i2 < n; i2++) {
+        var ts = tileProb(i2, best);
+        if (ts > 0) { qualTiles++; if (ts > bestP) bestP = ts; }
+      }
+      return { cells: best, tiles: tiles, idxOf: idxOf, species: species, score: bestProb, planted: bestPlanted, qualTiles: qualTiles, bestP: bestP };
+    }
+
+    // 选择当前目标（结果按 解锁数/总数/农场等级 缓存，不会每拍重算布局）
+    function gardenPickTarget(M) {
+      var unlockedN = 0, total = 0, locked = [];
+      for (var i in M.plants) { total++; if (M.plants[i].unlocked) unlockedN++; else locked.push(M.plants[i].key); }
+      if (!locked.length) return null;
+      var ck = unlockedN + '/' + total + '/' + M.parent.level;
+      if (gardenPickCache && gardenPickCache.key === ck) return gardenPickCache.pick;
+
+      var pick = null;
+      if (locked.indexOf('meddleweed') !== -1) {
+        pick = { key: 'meddleweed', type: 'weed' }; // 只能等空地自然长杂草
+      } else {
+        var recipes = gardenComputeRecipes(M);
+        var sporeKey = null;
+        for (var s = 0; s < locked.length; s++) {
+          if ((locked[s] === 'brownMold' || locked[s] === 'crumbspore') && !recipes[locked[s]]) { sporeKey = locked[s]; break; }
+        }
+        if (sporeKey) {
+          pick = { key: sporeKey, type: 'spore' }; // 无杂交配方，靠挖 meddleweed 掉孢子
+        } else {
+          var bestT = null;
+          for (var t = 0; t < locked.length; t++) {
+            var rec = recipes[locked[t]];
+            if (!rec) continue;
+            var lay = gardenOptimize(M, rec.need, locked[t]);
+            if (lay.qualTiles <= 0) continue; // 当前花园尺寸放不下（如 everdaisy 3+3），等升级
+            if (!bestT || lay.score > bestT.layout.score) bestT = { key: locked[t], type: 'mut', layout: lay };
+          }
+          if (bestT) pick = bestT;
+        }
+      }
+      gardenPickCache = { key: ck, pick: pick };
+      return pick;
+    }
+
+    // 种植：最多动用存款的 5%，给金饼干/建筑留钱
+    function gardenPlant(M, key, x, y) {
+      var p = M.plants[key];
+      if (!p || !p.unlocked || p.plantable === false) return false;
+      if (M.getCost(p) > Game.cookies * 0.05) return false;
+      if (!M.canPlant(p)) return false;
+      return !!M.useTool(p.id, x, y);
+    }
+
+    // 布局内亲本是否已全部种下且成熟（决定要不要用化肥催熟）
+    function gardenParentsMature(M) {
+      if (!gardenLayout) return true;
+      for (var i = 0; i < gardenLayout.tiles.length; i++) {
+        var want = gardenLayout.cells[i];
+        if (want === 0) continue;
+        var t = gardenLayout.tiles[i];
+        var tile = M.plot[t[1]][t[0]];
+        if (tile[0] <= 0) return false;
+        var p = M.plantsById[tile[0] - 1];
+        if (!p || p.key !== gardenLayout.species[want - 1] || tile[1] < p.mature) return false;
+      }
+      return true;
+    }
+
+    // 土壤管理：育种期优先木屑（变异×3）；亲本未熟且无木屑时用化肥催熟；其余情况保持
+    function gardenManageSoil(M) {
+      if (M.nextSoil > Date.now()) return;
+      var farms = M.parent.amount;
+      var want = M.soil;
+      if (gardenTargetType === 'mut') {
+        if (farms >= M.soils['woodchips'].req) want = M.soils['woodchips'].id;
+        else if (farms >= M.soils['fertilizer'].req && !gardenParentsMature(M)) want = M.soils['fertilizer'].id;
+      } else {
+        if (farms >= M.soils['fertilizer'].req) want = M.soils['fertilizer'].id; // 长草/熟草都快
+      }
+      if (want !== M.soil) {
+        M.nextSoil = Date.now() + (Game.Has('Turbo-charged soil') ? 1 : 600000); // 复刻游戏 10 分钟冷却
+        M.soil = want; M.computeStepT(); M.toCompute = true;
+      }
+    }
+
+    function gardenTick() {
+      if (stopped || !enabled || !gardenOn) return;
+      var M = gardenM();
+      if (!M) { gardenPhase = '未检测到花园（需 1 座 1 级以上农场）'; return; }
+      if (M.freeze) { gardenPhase = '花园已冻结，暂停管理'; return; }
+
+      var t = gardenPickTarget(M);
+      if (!t) {
+        var total = 0, unlockedN = 0;
+        for (var i in M.plants) { total++; if (M.plants[i].unlocked) unlockedN++; }
+        if (unlockedN >= total) {
+          gardenPhase = '🎉 图鉴集齐（' + total + '/' + total + '）';
+          gardenSetOn(false);
+          try { if (Game.Notify) Game.Notify('花园育种完成 🎉', '全部 ' + total + ' 种植物种子已集齐！'); } catch (e) {}
+          console.log('[AutoPilot Garden] 🎉 图鉴集齐，自动停止');
+        } else {
+          gardenPhase = '当前花园尺寸/亲本不足，等农场升级（剩 ' + (total - unlockedN) + ' 种）';
+        }
+        return;
+      }
+      if (gardenTarget !== t.key || gardenTargetType !== t.type) {
+        gardenTarget = t.key; gardenTargetType = t.type;
+        gardenLayout = t.layout || null;
+        console.log('[AutoPilot Garden] 新目标：' + (M.plants[t.key].name || t.key) + '（' + t.type + '）');
+        try { if (Game.Notify) Game.Notify('花园育种', '新目标：' + (M.plants[t.key].name || t.key)); } catch (e) {}
+      }
+
+      gardenManageSoil(M);
+
+      // 逐格维护
+      for (var y = 0; y < 6; y++) {
+        for (var x = 0; x < 6; x++) {
+          if (!M.isTileUnlocked(x, y)) continue;
+          var tile = M.plot[y][x];
+          var plant = tile[0] > 0 ? M.plantsById[tile[0] - 1] : null;
+
+          // 目标出现（杂交成功/孢子/杂草）→ 成熟即收获解锁
+          if (plant && plant.key === gardenTarget) {
+            if (tile[1] >= plant.mature) {
+              M.harvest(x, y);
+              gardenTarget = null; gardenLayout = null; gardenPickCache = null;
+              gardenPhase = '已收获目标，寻找下一个';
+            }
+            continue;
+          }
+          // 孢子期特例：掉出另一种孢子（brownMold/crumbspore 二选一随机）也算收获
+          if (gardenTargetType === 'spore' && plant &&
+              (plant.key === 'brownMold' || plant.key === 'crumbspore') && !M.plants[plant.key].unlocked) {
+            if (tile[1] >= plant.mature) {
+              M.harvest(x, y);
+              gardenTarget = null; gardenLayout = null; gardenPickCache = null;
+              gardenPhase = '意外收获孢子 ' + plant.name;
+            }
+            continue;
+          }
+
+          if (gardenTargetType === 'weed') {
+            if (plant) M.harvest(x, y); // 清场等杂草（杂草只在无邻居的空格长出）
+            continue;
+          }
+          if (gardenTargetType === 'spore') {
+            if (plant && plant.key === 'meddleweed') {
+              // onKill 掉孢子率 20%×age/100；age≥100 会老死不掉，故 80 就挖
+              if (tile[1] >= 80) M.harvest(x, y);
+              continue;
+            }
+            if (!plant) { gardenPlant(M, 'meddleweed', x, y); continue; }
+            M.harvest(x, y);
+            continue;
+          }
+
+          // mut 模式：按最优布局维护
+          var ci = gardenLayout.idxOf[x + ',' + y];
+          var want = gardenLayout.cells[ci];
+          if (want === 0) {
+            if (plant) M.harvest(x, y); // 挖掉布局外植物（含杂草），保住变异空格
+          } else {
+            var wantKey = gardenLayout.species[want - 1];
+            if (!plant) gardenPlant(M, wantKey, x, y); // 空格补种（含亲本老死后的自动补种）
+            else if (plant.key !== wantKey) M.harvest(x, y); // 错种挖掉，下拍补
+          }
+        }
+      }
+      gardenPhase = gardenTargetType === 'mut'
+        ? '育种中：' + gardenLayout.qualTiles + ' 个变异格，单格最高 ' + (gardenLayout.bestP * 100).toFixed(2) + '%/tick'
+        : (gardenTargetType === 'spore' ? '挖 meddleweed 刷孢子中' : '清场等杂草 meddleweed 中');
+    }
+
+    function gardenSetOn(on) {
+      on = !!on;
+      if (on === gardenOn) return;
+      gardenOn = on;
+      if (gardenOn && !gardenTimer) {
+        gardenTimer = setInterval(function () { try { gardenTick(); gardenRender(); } catch (e) {} }, 2000);
+      } else if (!gardenOn && gardenTimer) { clearInterval(gardenTimer); gardenTimer = null; }
+      if (!gardenOn) { gardenTarget = null; gardenLayout = null; gardenPhase = ''; }
+      updateGardenBtn();
+      gardenRender();
+      console.log('[AutoPilot Garden] 自动育种：' + (gardenOn ? '开启（将管理花园：挖掉布局外植物）' : '关闭'));
+      try {
+        if (Game.Notify) Game.Notify('花园自动育种', gardenOn ? '已开启：会挖掉布局外植物，请确认花园里没有舍不得的作物' : '已关闭');
+      } catch (e) {}
+    }
+
+    function gardenStatus() {
+      var M = gardenM();
+      var unlockedN = 0, total = 0;
+      if (M) { for (var i in M.plants) { total++; if (M.plants[i].unlocked) unlockedN++; } }
+      return {
+        on: gardenOn, target: gardenTarget, type: gardenTargetType, phase: gardenPhase,
+        unlocked: unlockedN, total: total,
+        layout: gardenLayout ? { species: gardenLayout.species, qualTiles: gardenLayout.qualTiles, bestP: gardenLayout.bestP, planted: gardenLayout.planted } : null
+      };
+    }
+
+    function gardenRender() {
+      if (!gardenPanel) return;
+      gardenPanel.style.display = gardenOn ? 'block' : 'none';
+      if (!gardenOn) return;
+      var M = gardenM();
+      var html = '';
+      if (!M) {
+        html = '<div style="color:#999;">未检测到花园。<br>需要 1 座 1 级以上农场（Farm）解锁花园小游戏。</div>';
+      } else {
+        var unlockedN = 0, total = 0;
+        for (var i in M.plants) { total++; if (M.plants[i].unlocked) unlockedN++; }
+        html += '<div style="padding:6px 8px;background:rgba(0,0,0,0.35);border-radius:4px;margin-bottom:6px;">';
+        html += '图鉴进度：<b style="color:#6f6;">' + unlockedN + '/' + total + '</b>　土壤：' + M.soilsById[M.soil].name + '<br>';
+        html += '当前目标：<b>' + (gardenTarget ? (M.plants[gardenTarget].name || gardenTarget) : '—') + '</b>' +
+          (gardenTargetType ? '（' + ({ mut: '杂交', weed: '等杂草', spore: '挖草掉孢子' })[gardenTargetType] + '）' : '') + '<br>';
+        html += '状态：' + (gardenPhase || '—');
+        html += '</div>';
+        if (gardenLayout && gardenTargetType === 'mut') {
+          html += '<div style="margin-bottom:2px;color:#fc6;font-weight:bold;">最优留空布局（' + gardenLayout.qualTiles + ' 个变异格，单格最高 ' +
+            (gardenLayout.bestP * 100).toFixed(2) + '%/tick，亲本 ' + gardenLayout.planted + ' 株）</div>';
+          html += '<pre style="margin:0 0 4px;font-size:14px;line-height:1.25;letter-spacing:2px;">';
+          for (var y = 0; y < 6; y++) {
+            var row = '';
+            for (var x = 0; x < 6; x++) {
+              if (!M.isTileUnlocked(x, y)) { row += ' '; continue; }
+              var c = gardenLayout.cells[gardenLayout.idxOf[x + ',' + y]];
+              row += c === 0 ? '·' : String.fromCharCode(64 + c); // A、B = 亲本
+            }
+            html += row + '\n';
+          }
+          html += '</pre>';
+          var sn = [];
+          for (var s = 0; s < gardenLayout.species.length; s++) {
+            sn.push(String.fromCharCode(65 + s) + '=' + (M.plants[gardenLayout.species[s]].name || gardenLayout.species[s]));
+          }
+          html += '<div style="color:#888;font-size:11px;">' + sn.join('，') + '；· = 留空变异格</div>';
+        }
+      }
+      gardenPanel.innerHTML = html;
+    }
+
+    function createGardenBtn() {
+      gardenBtn = document.createElement('div');
+      gardenBtn.id = 'cookie-autopilot-garden-btn';
+      gardenBtn.style.cssText = 'position:fixed;top:10px;left:118px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      updateGardenBtn();
+      gardenBtn.onclick = function () { gardenSetOn(!gardenOn); };
+      document.body.appendChild(gardenBtn);
+
+      gardenPanel = document.createElement('div');
+      gardenPanel.id = 'cookie-autopilot-garden-panel';
+      gardenPanel.style.cssText = 'display:none;position:fixed;top:36px;left:118px;z-index:99998;width:300px;background:rgba(10,10,20,0.92);color:#eee;padding:8px;border-radius:6px;border:1px solid #444;font-family:inherit;font-size:12px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.5);';
+      document.body.appendChild(gardenPanel);
+    }
+    function updateGardenBtn() {
+      if (!gardenBtn) return;
+      if (gardenOn) {
+        gardenBtn.textContent = '育种中';
+        gardenBtn.style.background = '#2d8a3e';
+      } else {
+        gardenBtn.textContent = '花园';
+        gardenBtn.style.background = '#6b7280';
+      }
+    }
+    function removeGardenUI() {
+      if (gardenTimer) { clearInterval(gardenTimer); gardenTimer = null; }
+      gardenOn = false;
+      if (gardenBtn && gardenBtn.parentNode) gardenBtn.parentNode.removeChild(gardenBtn);
+      if (gardenPanel && gardenPanel.parentNode) gardenPanel.parentNode.removeChild(gardenPanel);
+      gardenBtn = gardenPanel = null;
+    }
+
     schedule();
 
     // ---------- 对外接口 ----------
@@ -1027,6 +1516,7 @@
         removeCpsUI();
         removeFthofUI();
         removeFarmUI();
+        removeGardenUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
         delete window.CookieAutoPilot;
@@ -1064,6 +1554,12 @@
         stop: function () { farmFinish('手动取消', false); },
         status: farmStatus
       },
+      garden: {
+        start: function () { gardenSetOn(true); },
+        stop: function () { gardenSetOn(false); },
+        status: gardenStatus,
+        recipes: function () { var M = gardenM(); return M ? gardenComputeRecipes(M) : null; }
+      },
       setMode: function (m) {
         if (m !== 'strict' && m !== 'fast') {
           console.warn('[AutoPilot] 模式必须是 strict 或 fast');
@@ -1081,12 +1577,13 @@
     createModeBtn();
     createMasterBtn();
     createFarmBtn();
+    createGardenBtn();
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.4.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 预测 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.farm.start()/.farm.status()/.stop()');
+    console.log('[AutoPilot v5.5.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 预测，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.garden.start()/.garden.status()/.farm.start()/.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.4.0 已启动', '新增：刷金饼干模式（右上角「刷金」按钮，龙之宝珠+飞龙在天）');
+      if (Game.Notify) Game.Notify('AutoPilot v5.5.0 已启动', '新增：花园自动育种（左上「花园」按钮）；刷金前自动进入长者誓约防红饼干');
     } catch (e) {}
   }
 })();
