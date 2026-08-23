@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.2.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.3.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,9 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.3.0：新增「命运之手预测」面板——用与游戏 castSpell 完全相同的种子随机序列
+ *          （Math.seedrandom(Game.seed + '/' + spellsCastTotal)），提前算出下一次
+ *          Force the Hand of Fate 的成功/失败与具体效果；只读显示，不自动施放
  * v5.2.0：修复 Game.buffs 是对象不是数组——CpS 明细漏算全部 Buff（10% 偏差根源）、
  *          连招检测此前从未生效，现已一并修复
  * v5.1.9：集成 CpS 增益明细面板（逐项复现 CalculateGains + 残差对账行，总账恒等于游戏值）；
@@ -717,6 +720,137 @@
       cpsBtn = cpsPanel = cpsTimer = null;
     }
 
+    // ---------- FtHoF 命运之手预测（只读显示，不自动施放，不受总开关控制） ----------
+    // 原理：游戏施法时执行 Math.seedrandom(Game.seed + '/' + M.spellsCastTotal)，
+    // 之后所有 Math.random() 都是确定性序列。本模块复刻 minigameGrimoire.js
+    // castSpell + hand of fate 的每一次随机调用（顺序、次数完全一致），
+    // 即可在不改游戏状态的情况下提前算出下一次施放结果，预测恒等于实际结果。
+    var fthofPanel = null, fthofBtn = null, fthofTimer = null, fthofVisible = false;
+    var FTHOF_NAMES = {
+      win: {
+        'frenzy': '狂热 Frenzy（CpS ×7）',
+        'multiply cookies': '幸运 Lucky（白得饼干）',
+        'click frenzy': '点击狂热（点击 ×777）',
+        'cookie storm': '饼干风暴（满屏金饼干）',
+        'blab': '胡言乱语（无效果的彩蛋）',
+        'building special': '建筑特赐（随机建筑 +10% CpS）',
+        'cookie storm drop': '风暴金饼干（点击触发饼干风暴）',
+        'free sugar lump': '免费糖块！（直接 +1 糖块）'
+      },
+      fail: {
+        'clot': '血凝 Clot（CpS 减半 15 分钟）',
+        'ruin cookies': '饼干损毁（损失饼干）',
+        'cursed finger': '诅咒手指',
+        'blood frenzy': '血怒 Elder frenzy（×666）',
+        'free sugar lump': '免费糖块！（失败里的彩蛋）',
+        'blab': '胡言乱语（无效果的彩蛋）'
+      }
+    };
+
+    function fthofPredict() {
+      var wiz = Game.Objects['Wizard tower'];
+      if (!wiz || !wiz.minigame || !wiz.minigame.spells) return null;
+      var M = wiz.minigame;
+      var spell = M.spells['hand of fate'];
+      if (!spell) return null;
+      // 直接用游戏原生失败率：基础 15% × Magic adept/inept buff × 龙息
+      // Supreme Intellect 修正 + 场上每只金饼干 +15%（failFunc）
+      var failChance = M.getFailChance(spell);
+      // 金饼干初始化时的随机消耗：季节图（情人节/愚人节/复活节/万圣节 1 次）
+      // + 位置 x、y 各 1 次；win 分支 noWrath、fail 分支 wrath，愤怒判定均不消耗随机
+      var seasonPic = (Game.season === 'valentines' || Game.season === 'fools' ||
+        Game.season === 'easter' || Game.season === 'halloween') ? 1 : 0;
+
+      Math.seedrandom(Game.seed + '/' + M.spellsCastTotal);
+      var win = Math.random() < (1 - failChance);
+      var force, i;
+      if (win) {
+        for (i = 0; i < seasonPic + 2; i++) Math.random();
+        var choices = ['frenzy', 'multiply cookies'];
+        if (!Game.hasBuff('Dragonflight')) choices.push('click frenzy');
+        if (Math.random() < 0.1) choices.push('cookie storm', 'cookie storm', 'blab');
+        if (Game.BuildingsOwned >= 10 && Math.random() < 0.25) choices.push('building special');
+        if (Math.random() < 0.15) choices = ['cookie storm drop'];
+        if (Math.random() < 0.0001) choices.push('free sugar lump');
+        force = choices[Math.floor(Math.random() * choices.length)];
+        if (force === 'cookie storm drop') Math.random(); // sizeMult
+      } else {
+        for (i = 0; i < seasonPic + 2; i++) Math.random();
+        var fchoices = ['clot', 'ruin cookies'];
+        if (Math.random() < 0.1) fchoices.push('cursed finger', 'blood frenzy');
+        if (Math.random() < 0.003) fchoices.push('free sugar lump');
+        if (Math.random() < 0.1) fchoices = ['blab'];
+        force = fchoices[Math.floor(Math.random() * fchoices.length)];
+      }
+      Math.seedrandom(); // 与 castSpell 一致：施放后还原为非种子随机
+      return {
+        win: win,
+        force: force,
+        failChance: failChance,
+        goldOnScreen: Game.shimmerTypes['golden'].n,
+        cost: M.getSpellCost(spell),
+        magic: M.magic,
+        magicM: M.magicM,
+        castTotal: M.spellsCastTotal
+      };
+    }
+
+    function fthofRender() {
+      if (!fthofPanel || !fthofVisible) return;
+      var p = null;
+      try { p = fthofPredict(); } catch (e) {}
+      var html = '';
+      if (!p) {
+        html = '<div style="color:#999;">未检测到魔法塔小游戏。<br>需要至少 1 座 1 级以上的魔法塔（Wizard tower）解锁魔法系统。</div>';
+      } else {
+        var name = (FTHOF_NAMES[p.win ? 'win' : 'fail'])[p.force] || p.force;
+        html += '<div style="padding:6px 8px;background:rgba(0,0,0,0.35);border-radius:4px;margin-bottom:6px;">';
+        html += '下一次「命运之手」结果：<br><b style="font-size:15px;color:' + (p.win ? '#6f6' : '#f66') + ';">' +
+          (p.win ? '✔ 成功 → ' : '✘ 失败 → ') + name + '</b><br>';
+        html += '当前失败率：<b>' + (p.failChance * 100).toFixed(1) + '%</b>（基础 15%' +
+          (p.goldOnScreen > 0 ? ' + 场上金饼干 ×' + p.goldOnScreen : '') + '）<br>';
+        html += '魔力：<b' + (p.magic >= p.cost ? ' style="color:#6f6;"' : ' style="color:#f66;"') + '>' +
+          Math.floor(p.magic) + '/' + Math.floor(p.magicM) + '</b>' +
+          (p.magic >= p.cost ? '（可施放，消耗 ' + p.cost.toFixed(0) + '）' : '（不够，需 ' + p.cost.toFixed(0) + '）');
+        html += '</div>';
+        html += '<div style="color:#888;font-size:11px;">种子：存档种子 + 施放总数（当前 ' + p.castTotal + ' 次）。<br>' +
+          '每次施放任意法术、刷新/读档后预测都会重新计算；本面板只读，不会替你施放。</div>';
+      }
+      fthofPanel.innerHTML = html;
+    }
+
+    function toggleFthofPanel() {
+      fthofVisible = !fthofVisible;
+      if (fthofPanel) fthofPanel.style.display = fthofVisible ? 'block' : 'none';
+      if (fthofBtn) fthofBtn.style.background = fthofVisible ? '#7c3aed' : '#6b7280';
+      if (fthofVisible) fthofRender();
+    }
+
+    function createFthofBtn() {
+      fthofBtn = document.createElement('div');
+      fthofBtn.id = 'cookie-autopilot-fthof-btn';
+      fthofBtn.textContent = '命运';
+      fthofBtn.style.cssText = 'position:fixed;top:10px;left:64px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;background:#6b7280;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      fthofBtn.onclick = function () { toggleFthofPanel(); };
+      document.body.appendChild(fthofBtn);
+
+      fthofPanel = document.createElement('div');
+      fthofPanel.id = 'cookie-autopilot-fthof-panel';
+      fthofPanel.style.cssText = 'display:none;position:fixed;top:36px;left:440px;z-index:99998;width:300px;background:rgba(10,10,20,0.92);color:#eee;padding:8px;border-radius:6px;border:1px solid #444;font-family:inherit;font-size:12px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.5);';
+      document.body.appendChild(fthofPanel);
+
+      fthofTimer = setInterval(function () {
+        try { fthofRender(); } catch (e) {}
+      }, 500);
+    }
+
+    function removeFthofUI() {
+      if (fthofTimer) clearInterval(fthofTimer);
+      if (fthofBtn && fthofBtn.parentNode) fthofBtn.parentNode.removeChild(fthofBtn);
+      if (fthofPanel && fthofPanel.parentNode) fthofPanel.parentNode.removeChild(fthofPanel);
+      fthofBtn = fthofPanel = fthofTimer = null;
+    }
+
     schedule();
 
     // ---------- 对外接口 ----------
@@ -728,6 +862,7 @@
         removeModeBtn();
         removeMasterBtn();
         removeCpsUI();
+        removeFthofUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
         delete window.CookieAutoPilot;
@@ -756,6 +891,10 @@
         status: getComboStatus,
         history: getComboHistory
       },
+      fthof: {
+        toggle: toggleFthofPanel,
+        predict: fthofPredict
+      },
       setMode: function (m) {
         if (m !== 'strict' && m !== 'fast') {
           console.warn('[AutoPilot] 模式必须是 strict 或 fast');
@@ -773,10 +912,11 @@
     createModeBtn();
     createMasterBtn();
     createCpsBtn();
+    createFthofBtn();
 
-    console.log('[AutoPilot v5.2.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上角：CpS=增益明细 | 右上角：紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.setEnabled()/.setMode()/.cps.toggle()/.stop()');
+    console.log('[AutoPilot v5.3.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上角：CpS=增益明细，命运=FtHoF 预测 | 右上角：紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.fthof.predict()/.setEnabled()/.setMode()/.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.2.0 已启动', '修复：CpS 明细 Buff 漏算（偏差归零）+ 连招检测');
+      if (Game.Notify) Game.Notify('AutoPilot v5.3.0 已启动', '新增：命运之手结果预测（左上角「命运」按钮）');
     } catch (e) {}
   }
 })();
