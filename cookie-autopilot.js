@@ -7,7 +7,7 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
- * v5.1.6：修复 CollectWrinklers() 误杀所有虫 + 季节升级全部黑名单
+ * v5.1.6：修复 CollectWrinklers() 误杀所有虫 + 季节升级全部黑名单 + 虫槽位越界修复
  * v5.1.5：buyTimes 环形缓冲区、Fortune 单双引号兼容、scanAll 缓存、
  *          Notify 异常防护、变量名去重
  * v5.1.4：修复 Fortune 检测（查两个 ticker + class="fortune"）、增加红饼干（wrath）自动点击
@@ -283,8 +283,11 @@
             Game.wrinklers.forEach(function (w) { if (w.hp > 0) { w.hp = 0; anyAlive = true; } });
             if (anyAlive && Game.CollectWrinklers) Game.CollectWrinklers();
           } else {
-            var alive = Game.wrinklers.filter(function (w) { return w.hp > 0; });
             var wmax = Game.getWrinklersMax ? Game.getWrinklersMax() : 10;
+            var alive = [];
+            for (var wi = 0; wi < Game.wrinklers.length; wi++) {
+              if (wi < wmax && Game.wrinklers[wi].hp > 0) alive.push(Game.wrinklers[wi]);
+            }
             if (alive.length >= wmax) {
               var fattest = null;
               alive.forEach(function (w) {
