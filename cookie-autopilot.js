@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.1.8 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.9 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.1.9：集成 CpS 增益明细面板（逐项复现 CalculateGains + 残差对账行，总账恒等于游戏值）；
+ *          嬤虫逻辑重写：删除全部旧虫代码，仅满员时捏爆最后一只（非闪光）
  * v5.1.8：新增总开关按钮（一键暂停/恢复全部自动化），为连招开发模块预留互斥入口
  * v5.1.7：集成连招辅助（buff 检测 + Godzamok 一键卖建筑 + 连招统计）
  * v5.1.6：修复 CollectWrinklers() 误杀所有虫 + 季节升级全部黑名单 + 虫槽位越界修复
@@ -337,30 +339,22 @@
         if (CFG.mode === 'strict') buyStrict(scan);
         else buyFast(scan);
 
-        // --- 嬤虫：满员轮替 ---
+        // --- 嬤虫：仅在满员时捏爆"最后一只"（槽位最高、最新附着的非闪光虫），腾出槽位养新虫 ---
+        // --- 其余虫全部保留（含飞升时），由你手动处理 ---
         if (Game.wrinklers) {
-          if (Game.OnAscend > 0) {
-            var anyAlive = false;
-            Game.wrinklers.forEach(function (w) { if (w.hp > 0) { w.hp = 0; anyAlive = true; } });
-            if (anyAlive && Game.CollectWrinklers) Game.CollectWrinklers();
-          } else {
-            var wmax = Game.getWrinklersMax ? Game.getWrinklersMax() : 10;
-            var alive = [];
-            for (var wi = 0; wi < Game.wrinklers.length; wi++) {
-              if (wi < wmax && Game.wrinklers[wi].hp > 0) alive.push(Game.wrinklers[wi]);
+          var wmax = Game.getWrinklersMax ? Game.getWrinklersMax() : 10;
+          var wAlive = 0;
+          var lastW = null;
+          for (var wi = 0; wi < Game.wrinklers.length && wi < wmax; wi++) {
+            var w = Game.wrinklers[wi];
+            if (w.phase > 0 && w.hp > 0) {
+              wAlive++;
+              if (!w.type) lastW = w; // 闪光虫豁免，留到飞升
             }
-            if (alive.length >= wmax) {
-              var fattest = null;
-              alive.forEach(function (w) {
-                if (w.type) return; // 闪光虫豁免，留到飞升
-                if (!fattest || w.sucked > fattest.sucked) fattest = w;
-              });
-              if (fattest && fattest.sucked > 0) {
-                fattest.hp = 0;
-                // 注意：Game.CollectWrinklers() 会杀死所有虫，不是只收集死虫。
-                // 单只虫 hp=0 后游戏会自动爆裂并返还饼干，不需要额外调用。
-              }
-            }
+          }
+          if (wAlive >= wmax && lastW && lastW.sucked > 0) {
+            lastW.hp = 0;
+            // 单只虫 hp=0 后游戏自动爆裂返还饼干，不需要调用 CollectWrinklers()（那会团灭全虫）
           }
         }
 
@@ -448,6 +442,273 @@
       return comboHistory.slice(-20); // 最近 20 条
     }
 
+    // ---------- CpS 增益明细面板（只读显示，不受总开关控制） ----------
+    var cpsPanel = null, cpsBtn = null, cpsTimer = null, cpsVisible = false;
+
+    // 逐项复现 Game.CalculateGains() 的乘数链
+    function cpsCollect() {
+      var rows = [];   // {cat, name, mult, cum, note}
+      var cum = 1;
+      function add(cat, name, m, note) {
+        if (m === 1) return;
+        rows.push({ cat: cat, name: name, mult: m, cum: cum * m, note: note || '' });
+        cum *= m;
+      }
+
+      // 1. 天堂碎片（prestige）
+      if (Game.ascensionMode != 1 && Game.prestige > 0) {
+        var pm = 1 + parseFloat(Game.prestige) * 0.01 * Game.heavenlyPower * Game.GetHeavenlyMultiplier();
+        add('天堂', '天堂碎片（prestige）', pm, Beautify(Math.floor(Game.prestige)) + ' 级');
+      }
+
+      // 2. 建筑小游戏效果（花园/万神殿等 eff('cps')）
+      var effCps = Game.eff ? Game.eff('cps') : 1;
+      if (effCps !== 1) add('小游戏', '建筑小游戏效果 eff(cps)', effCps, '花园/万神殿等');
+
+      // 3. Heralds
+      if (Game.Has('Heralds') && Game.ascensionMode != 1 && Game.heralds > 0) {
+        add('天堂', 'Heralds', 1 + 0.01 * Game.heralds, Game.heralds + ' 位');
+      }
+
+      // 4. 饼干类升级（含季节饼干）
+      if (Game.cookieUpgrades) {
+        for (var i = 0; i < Game.cookieUpgrades.length; i++) {
+          var cu = Game.cookieUpgrades[i];
+          if (Game.Has(cu.name)) {
+            var p = (typeof cu.power === 'function') ? cu.power(cu) : cu.power;
+            if (p) add('饼干升级', cu.name, 1 + p * 0.01);
+          }
+        }
+      }
+
+      // 5. 科技线 / 圣诞老人 / Fortune / 龙鳞等固定项
+      var FIXED = [
+        ['Specialized chocolate chips', 1.01, '科技线'],
+        ['Designer cocoa beans', 1.02, '科技线'],
+        ['Underworld ovens', 1.03, '科技线'],
+        ['Exotic nuts', 1.04, '科技线'],
+        ['Arcane sugar', 1.05, '科技线'],
+        ['Increased merriness', 1.15, '圣诞老人'],
+        ['Improved jolliness', 1.15, '圣诞老人'],
+        ['A lump of coal', 1.01, '圣诞老人'],
+        ['An itchy sweater', 1.01, '圣诞老人'],
+        ["Santa's dominion", 1.2, '圣诞老人'],
+        ['Fortune #100', 1.01, '幸运签'],
+        ['Fortune #101', 1.07, '幸运签'],
+        ['Dragon scale', 1.03, '龙'],
+        ['Wrinkler ambergris', 1.06, '嬤虫掉落']
+      ];
+      for (var f = 0; f < FIXED.length; f++) {
+        if (Game.Has(FIXED[f][0])) add(FIXED[f][2], FIXED[f][0], FIXED[f][1]);
+      }
+
+      // 6. 万神殿神位（直接乘全局的）
+      if (Game.hasGod) {
+        var g = Game.hasGod('asceticism');
+        if (g) add('万神殿', 'Asceticism ' + ['', '钻石', '红宝石', '翡翠'][g] + '位', g === 1 ? 1.15 : g === 2 ? 1.1 : 1.05);
+        g = Game.hasGod('ages');
+        if (g) {
+          var period = g === 1 ? 3 : g === 2 ? 12 : 24;
+          var agesMult = 1 + 0.15 * Math.sin((Date.now() / 1000 / (60 * 60 * period)) * Math.PI * 2);
+          add('万神殿', 'Ages（' + period + 'h 周期 ±15%）', agesMult, '当前相位');
+        }
+      }
+
+      // 7. Santa's legacy
+      if (Game.Has("Santa's legacy")) add('圣诞老人', "Santa's legacy", 1 + (Game.santaLevel + 1) * 0.03, 'Lv.' + Game.santaLevel);
+
+      // 8. 牛奶增效 + 猫咪
+      var milkProgress = Game.AchievementsOwned / 25;
+      var milkMult = 1;
+      if (Game.Has("Santa's milk and cookies")) milkMult *= 1.05;
+      milkMult *= 1 + Game.auraMult('Breath of Milk') * 0.05;
+      if (Game.hasGod) {
+        var mg = Game.hasGod('mother');
+        if (mg) milkMult *= mg === 1 ? 1.1 : mg === 2 ? 1.05 : 1.03;
+      }
+      if (Game.eff) milkMult *= Game.eff('milk');
+      add('牛奶', 'milkMult（成就 ' + Game.AchievementsOwned + ' → 奶量 ' + (milkProgress * 100).toFixed(1) + '%）', milkMult);
+
+      var KITTENS = [
+        ['Kitten helpers', 0.1], ['Kitten workers', 0.125], ['Kitten engineers', 0.15],
+        ['Kitten overseers', 0.175], ['Kitten managers', 0.2], ['Kitten accountants', 0.2],
+        ['Kitten specialists', 0.2], ['Kitten experts', 0.2], ['Kitten consultants', 0.2],
+        ['Kitten assistants to the regional manager', 0.175], ['Kitten marketeers', 0.15],
+        ['Kitten analysts', 0.125], ['Kitten executives', 0.115], ['Kitten admins', 0.11],
+        ['Kitten strategists', 0.105], ['Kitten angels', 0.1], ['Fortune #103', 0.05]
+      ];
+      for (var k = 0; k < KITTENS.length; k++) {
+        if (Game.Has(KITTENS[k][0])) {
+          add('猫咪', KITTENS[k][0], 1 + milkProgress * KITTENS[k][1] * milkMult, '奶量×' + KITTENS[k][1]);
+        }
+      }
+
+      // 9. 复活节蛋
+      var EGGS = ['Chicken egg', 'Duck egg', 'Turkey egg', 'Quail egg', 'Robin egg', 'Ostrich egg',
+        'Cassowary egg', 'Salmon roe', 'Frogspawn', 'Shark egg', 'Turtle egg', 'Ant larva'];
+      for (var e = 0; e < EGGS.length; e++) {
+        if (Game.Has(EGGS[e])) add('复活节', EGGS[e], 1.01);
+      }
+      if (Game.Has('Century egg')) {
+        var day = Math.floor((Date.now() - Game.startDate) / 1000 / 10) * 10 / 60 / 60 / 24;
+        day = Math.max(0, Math.min(day, 100));
+        add('复活节', 'Century egg', 1 + (1 - Math.pow(1 - day / 100, 3)) * 0.1, '第 ' + Math.floor(day) + ' 天');
+      }
+
+      // 10. 糖块
+      if (Game.Has('Sugar baking') && Game.lumps > 0) {
+        add('糖块', 'Sugar baking', 1 + Math.min(100, Game.lumps) * 0.01, Game.lumps + ' 块（上限 100）');
+      }
+
+      // 11. 龙息光环
+      var ra = Game.auraMult('Radiant Appetite');
+      if (ra) add('龙息光环', 'Radiant Appetite', 1 + ra);
+      var df = Game.auraMult('Dragon\'s Fortune');
+      var gn = Game.shimmerTypes && Game.shimmerTypes['golden'] ? Game.shimmerTypes['golden'].n : 0;
+      if (df && gn > 0) add('龙息光环', "Dragon's Fortune ×" + gn + ' 金饼干在场', Math.pow(1 + df * 1.23, gn));
+
+      // 12. 面包房名字彩蛋
+      var bname = (Game.bakeryName || '').toLowerCase();
+      if (bname === 'orteil') add('彩蛋', '面包房名叫 Orteil', 0.99);
+      else if (bname === 'ortiel') add('彩蛋', '面包房名叫 Ortiel', 0.98);
+
+      // 13. 开关型与特殊
+      if (Game.Has('Elder Covenant')) add('阿嬷', 'Elder Covenant（永久安抚）', 0.95);
+      if (Game.Has('Golden switch [off]')) {
+        var gsw = 1.5;
+        if (Game.Has('Residual luck') && Game.goldenCookieUpgrades) {
+          var gc = 0;
+          for (var gi = 0; gi < Game.goldenCookieUpgrades.length; gi++) {
+            if (Game.Has(Game.goldenCookieUpgrades[gi])) gc++;
+          }
+          gsw += 0.1 * gc;
+        }
+        add('开关', 'Golden switch（关金饼干换 CpS）', gsw);
+      }
+      if (Game.Has('Shimmering veil [off]')) add('开关', 'Shimmering veil（关面纱）', 1 + Game.getVeilBoost());
+      if (Game.Has('Magic shenanigans')) add('作弊', 'Magic shenanigans', 1000);
+      if (Game.Has('Occult obstruction')) add('作弊', 'Occult obstruction', 0);
+
+      // 14. Buff（Frenzy ×7 / Elder frenzy / Building special / Sugar frenzy 等）
+      if (Game.buffs) {
+        for (var b = 0; b < Game.buffs.length; b++) {
+          var bf = Game.buffs[b];
+          if (typeof bf.multCpS !== 'undefined' && bf.multCpS !== 1) {
+            add('Buff', bf.name, bf.multCpS, '剩 ' + Math.ceil(bf.time / Game.fps) + 's');
+          }
+        }
+      }
+
+      // 15. 对账：残差行，使总账恒等于 Game.globalCpsMult（零偏差）
+      var gameMult = Game.globalCpsMult || 1;
+      var residual = cum > 0 ? gameMult / cum : 1;
+      if (Math.abs(residual - 1) > 1e-9) {
+        rows.push({ cat: '对账', name: '⚠ 未追踪来源（mod 钩子/时序差）', mult: residual, cum: gameMult, note: '请反馈此数值' });
+        cum = gameMult;
+      }
+
+      return { rows: rows, cum: cum, residual: residual, gameMult: gameMult };
+    }
+
+    function cpsBuildings() {
+      var list = [];
+      var total = Game.buildingCps || 0;
+      for (var i in Game.Objects) {
+        var me = Game.Objects[i];
+        if (me.amount > 0) {
+          list.push({ name: me.name, amount: me.amount, cps: me.storedTotalCps, pct: total > 0 ? me.storedTotalCps / total * 100 : 0 });
+        }
+      }
+      list.sort(function (a, b) { return b.cps - a.cps; });
+      return list;
+    }
+
+    function cpsFmt(m) {
+      if (m >= 100) return '×' + Beautify(Math.round(m));
+      return '×' + m.toFixed(m < 1.1 ? 4 : 3);
+    }
+
+    function cpsRender() {
+      if (!cpsPanel || !cpsVisible) return;
+      var data = cpsCollect();
+      var html = '';
+
+      var raw = Game.cookiesPsRaw || 0;
+      var final = Game.cookiesPs || 0;
+      var sucked = Game.cpsSucked || 0;
+
+      html += '<div style="padding:6px 8px;background:rgba(0,0,0,0.35);border-radius:4px;margin-bottom:6px;">';
+      html += '建筑裸产：<b>' + Beautify(raw) + '</b>/s<br>';
+      html += '全局倍率：<b>' + cpsFmt(data.gameMult) + '</b>（明细复算 ' + cpsFmt(data.cum) + '）<br>';
+      html += '最终 CpS：<b style="color:#6f6;">' + Beautify(final) + '</b>/s';
+      if (sucked > 0) html += '<br>嬤虫吸走：<b style="color:#f96;">-' + (sucked * 100).toFixed(1) + '%</b>（实际到手 ' + Beautify(final * (1 - sucked)) + '/s）';
+      html += '<br>对账：' + (Math.abs(data.residual - 1) <= 1e-9
+        ? '<b style="color:#6f6;">✓ 与游戏完全一致</b>'
+        : '<b style="color:#ff6;">残差 ×' + data.residual.toFixed(6) + '</b>（已列为明细最后一行，总账已补齐）');
+      html += '</div>';
+
+      html += '<div style="margin-bottom:2px;color:#fc6;font-weight:bold;">倍率明细（' + data.rows.length + ' 项生效）</div>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
+      html += '<tr style="color:#999;text-align:left;"><th style="padding:1px 4px;">项目</th><th style="padding:1px 4px;">倍率</th><th style="padding:1px 4px;">累计</th></tr>';
+      var lastCat = '';
+      for (var i = 0; i < data.rows.length; i++) {
+        var r = data.rows[i];
+        if (r.cat !== lastCat) {
+          html += '<tr><td colspan="3" style="color:#9cf;padding:3px 4px 1px;font-weight:bold;">' + r.cat + '</td></tr>';
+          lastCat = r.cat;
+        }
+        html += '<tr>' +
+          '<td style="padding:1px 4px;">' + r.name + (r.note ? ' <span style="color:#888;">' + r.note + '</span>' : '') + '</td>' +
+          '<td style="padding:1px 4px;color:' + (r.mult >= 1 ? '#6f6' : '#f66') + ';">' + cpsFmt(r.mult) + '</td>' +
+          '<td style="padding:1px 4px;color:#ccc;">' + cpsFmt(r.cum) + '</td></tr>';
+      }
+      html += '</table>';
+
+      var bs = cpsBuildings();
+      html += '<div style="margin:6px 0 2px;color:#fc6;font-weight:bold;">建筑贡献</div>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
+      for (var j = 0; j < bs.length; j++) {
+        html += '<tr><td style="padding:1px 4px;">' + bs[j].name + ' ×' + bs[j].amount + '</td>' +
+          '<td style="padding:1px 4px;color:#6f6;">' + Beautify(Math.round(bs[j].cps)) + '/s</td>' +
+          '<td style="padding:1px 4px;color:#ccc;">' + bs[j].pct.toFixed(1) + '%</td></tr>';
+      }
+      html += '</table>';
+
+      cpsPanel.innerHTML = html;
+    }
+
+    function toggleCpsPanel() {
+      cpsVisible = !cpsVisible;
+      if (cpsPanel) cpsPanel.style.display = cpsVisible ? 'block' : 'none';
+      if (cpsBtn) cpsBtn.style.background = cpsVisible ? '#b45309' : '#6b7280';
+      if (cpsVisible) cpsRender();
+    }
+
+    function createCpsBtn() {
+      cpsBtn = document.createElement('div');
+      cpsBtn.id = 'cookie-autopilot-cps-btn';
+      cpsBtn.textContent = 'CpS';
+      cpsBtn.style.cssText = 'position:fixed;top:10px;right:158px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;background:#6b7280;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      cpsBtn.onclick = function () { toggleCpsPanel(); };
+      document.body.appendChild(cpsBtn);
+
+      cpsPanel = document.createElement('div');
+      cpsPanel.id = 'cookie-autopilot-cps-panel';
+      cpsPanel.style.cssText = 'display:none;position:fixed;top:36px;right:10px;z-index:99998;width:420px;max-height:80vh;overflow-y:auto;background:rgba(10,10,20,0.92);color:#eee;padding:8px;border-radius:6px;border:1px solid #444;font-family:inherit;font-size:12px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.5);';
+      document.body.appendChild(cpsPanel);
+
+      cpsTimer = setInterval(function () {
+        try { cpsRender(); } catch (e) {}
+      }, 1000);
+    }
+
+    function removeCpsUI() {
+      if (cpsTimer) clearInterval(cpsTimer);
+      if (cpsBtn && cpsBtn.parentNode) cpsBtn.parentNode.removeChild(cpsBtn);
+      if (cpsPanel && cpsPanel.parentNode) cpsPanel.parentNode.removeChild(cpsPanel);
+      cpsBtn = cpsPanel = cpsTimer = null;
+    }
+
     schedule();
 
     // ---------- 对外接口 ----------
@@ -458,6 +719,7 @@
         stopClicker();
         removeModeBtn();
         removeMasterBtn();
+        removeCpsUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
         delete window.CookieAutoPilot;
@@ -466,6 +728,14 @@
       config: CFG,
       setEnabled: setEnabled,
       isEnabled: function () { return enabled; },
+      cps: {
+        toggle: toggleCpsPanel,
+        refresh: cpsRender,
+        debug: function () {
+          var d = cpsCollect();
+          return { computed: d.cum, game: d.gameMult, residual: d.residual, items: d.rows.length };
+        }
+      },
       stats: function () {
         var lastBuy = buyCount > 0 ? buyTimes[(buyIdx - 1 + BUY_BUF_SIZE) % BUY_BUF_SIZE] : null;
         return {
@@ -494,10 +764,11 @@
 
     createModeBtn();
     createMasterBtn();
+    createCpsBtn();
 
-    console.log('[AutoPilot v5.1.8] 已启动 ✔ 模式=' + CFG.mode + ' | 右上角：紫色按钮=总开关，绿/蓝按钮=切换模式 | 控制台：CookieAutoPilot.setEnabled(true/false) / .stop()');
+    console.log('[AutoPilot v5.1.9] 已启动 ✔ 模式=' + CFG.mode + ' | 右上角：CpS=增益明细，紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.setEnabled()/.setMode()/.cps.toggle()/.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.1.8 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道') + ' | 总开关：运行中');
+      if (Game.Notify) Game.Notify('AutoPilot v5.1.9 已启动', '新增：CpS 增益明细面板（橙色按钮）| 嬤虫：仅满员时捏最后一只');
     } catch (e) {}
   }
 })();
