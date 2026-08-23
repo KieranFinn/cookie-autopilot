@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.1.9 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.2.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.2.0：修复 Game.buffs 是对象不是数组——CpS 明细漏算全部 Buff（10% 偏差根源）、
+ *          连招检测此前从未生效，现已一并修复
  * v5.1.9：集成 CpS 增益明细面板（逐项复现 CalculateGains + 残差对账行，总账恒等于游戏值）；
  *          嬤虫逻辑重写：删除全部旧虫代码，仅满员时捏爆最后一只（非闪光）
  * v5.1.8：新增总开关按钮（一键暂停/恢复全部自动化），为连招开发模块预留互斥入口
@@ -375,17 +377,18 @@
 
     function checkCombo() {
       if (!Game.buffs) return;
-      var buffs = Game.buffs;
       var hasF = false, hasBS = false, hasCF = false, hasDF = false, hasEF = false;
       var parts = [];
 
-      for (var i = 0; i < buffs.length; i++) {
-        var b = buffs[i];
+      // 注意：Game.buffs 是按名字索引的对象，不是数组
+      for (var bn in Game.buffs) {
+        var b = Game.buffs[bn];
+        if (!b) continue;
         if (b.name === 'Frenzy') { hasF = true; }
         else if (b.name === 'Click frenzy') { hasCF = true; }
         else if (b.name === 'Dragonflight') { hasDF = true; }
         else if (b.name === 'Elder frenzy') { hasEF = true; }
-        else if (b.name.indexOf('Building special') !== -1) { hasBS = true; }
+        else if (b.name && b.name.indexOf('Building special') !== -1) { hasBS = true; }
       }
 
       if (hasF) parts.push('F');
@@ -433,9 +436,13 @@
 
     function getComboStatus() {
       if (!Game.buffs) return [];
-      return Game.buffs.map(function (b) {
-        return { name: b.name, timeLeft: Math.ceil(b.time / Game.fps) + 's', multiplier: b.mult || '-' };
-      });
+      var out = [];
+      for (var bn in Game.buffs) {
+        var b = Game.buffs[bn];
+        if (!b) continue;
+        out.push({ name: b.name, timeLeft: Math.ceil(b.time / Game.fps) + 's', multCpS: b.multCpS || '-', multClick: b.multClick || '-' });
+      }
+      return out;
     }
 
     function getComboHistory() {
@@ -590,10 +597,11 @@
       if (Game.Has('Occult obstruction')) add('作弊', 'Occult obstruction', 0);
 
       // 14. Buff（Frenzy ×7 / Elder frenzy / Building special / Sugar frenzy 等）
+      // 注意：Game.buffs 是按名字索引的对象而非数组，过期 buff 会被游戏 delete
       if (Game.buffs) {
-        for (var b = 0; b < Game.buffs.length; b++) {
-          var bf = Game.buffs[b];
-          if (typeof bf.multCpS !== 'undefined' && bf.multCpS !== 1) {
+        for (var bn in Game.buffs) {
+          var bf = Game.buffs[bn];
+          if (bf && typeof bf.multCpS !== 'undefined' && bf.multCpS !== 1) {
             add('Buff', bf.name, bf.multCpS, '剩 ' + Math.ceil(bf.time / Game.fps) + 's');
           }
         }
@@ -766,9 +774,9 @@
     createMasterBtn();
     createCpsBtn();
 
-    console.log('[AutoPilot v5.1.9] 已启动 ✔ 模式=' + CFG.mode + ' | 左上角：CpS=增益明细 | 右上角：紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.setEnabled()/.setMode()/.cps.toggle()/.stop()');
+    console.log('[AutoPilot v5.2.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上角：CpS=增益明细 | 右上角：紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.setEnabled()/.setMode()/.cps.toggle()/.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.1.9 已启动', '新增：CpS 增益明细面板（左上角橙色按钮）| 嬤虫：仅满员时捏最后一只');
+      if (Game.Notify) Game.Notify('AutoPilot v5.2.0 已启动', '修复：CpS 明细 Buff 漏算（偏差归零）+ 连招检测');
     } catch (e) {}
   }
 })();
