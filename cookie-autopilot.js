@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.6.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.7.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,10 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.7.0：移除刷金前自动长者誓约（回滚 v5.5.0 该设定，是否安抚阿嬷由你决定）；
+ *          连招辅助新增黄金开关联动：连招触发（F+CF 及以上）自动开 Golden switch
+ *          （+50% CpS 强化点击收益），buff 全部结束后自动关闭恢复金饼干刷新；
+ *          只关闭本模块自动开启的，不误关你手动开的
  * v5.6.0：命运之手预测扩展为「下两发」（种子序列偏移 +1 复刻，保留 combo 规划空间）；
  *          命运面板新增刷序列按钮——用最廉价法术（动态选 getSpellCost 最低者，通常
  *          是 Conjure Baked Goods）推进 spellsCastTotal，可单刷或自动刷到下两发内出现
@@ -392,6 +396,26 @@
     // ---------- 连招辅助 ----------
     var comboAlerted = false;
     var comboHistory = [];
+    var goldenSwitchAuto = false; // 标记黄金开关是本模块自动开的（不误关用户手动开的）
+
+    // 黄金开关（Golden switch）：on=买 'Golden switch [off]'（+50% CpS、停刷金饼干），
+    // off=买 'Golden switch [on]'（恢复）。两个方向都花 1 小时 CpS（main.js priceFunc）。
+    function goldenSwitchToggle(on) {
+      var name = on ? 'Golden switch [off]' : 'Golden switch [on]';
+      var u = Game.Upgrades[name];
+      if (!u || !u.unlocked) return false; // 天堂升级 Golden switch 未购买
+      if (u.bought) { goldenSwitchAuto = on ? goldenSwitchAuto : false; return true; } // 已在目标状态
+      var price = u.getPrice();
+      if (price > Game.cookies) {
+        console.log('[AutoPilot Combo] 黄金开关：存款不足（需 ' + Beautify(Math.round(price)) + '），本次不切换');
+        return false;
+      }
+      u.buy(true);
+      goldenSwitchAuto = on;
+      console.log('[AutoPilot Combo] 黄金开关已自动' + (on ? '开启（+50% CpS，强化连招点击收益）' : '关闭（恢复金饼干刷新）'));
+      try { if (Game.Notify) Game.Notify('连招辅助', '黄金开关已自动' + (on ? '开启 +50% CpS' : '关闭，恢复金饼干')); } catch (e) {}
+      return true;
+    }
 
     function checkCombo() {
       if (!Game.buffs) return;
@@ -426,6 +450,11 @@
           if (Game.Notify) Game.Notify('连招辅助 🚨', msg + ' 输入 CookieAutoPilot.combo.sellForGodzamok() 卖建筑触发 Godzamok');
         } catch (e) {}
       }
+
+      // 连招触发 → 自动开黄金开关（+50% CpS 强化点击）；buff 全结束 → 自动关闭。
+      // 只关本模块自动开的（goldenSwitchAuto 标记），你手动开的不动。
+      if (level >= 4 && !Game.Has('Golden switch [off]')) goldenSwitchToggle(true);
+      if (level === 0 && goldenSwitchAuto && Game.Has('Golden switch [off]')) goldenSwitchToggle(false);
 
       // 所有 buff 消失后重置提醒状态
       if (level === 0) comboAlerted = false;
@@ -1023,18 +1052,6 @@
       return '';
     }
 
-    // 进入/维持长者誓约（Elder Pledge 临时安抚，非 Elder Covenant 永久 -5%）：
-    // elderWrath=0 期间金饼干不会刷成红饼干（main.js shimmer 初始化 wrath 判定）。
-    // 注意：买誓约会触发游戏自带的 CollectWrinklers() 收全部嬤虫（游戏机制，非本脚本行为）
-    function farmEnsurePledge() {
-      if (Game.elderWrath <= 0) return true; // 未开启阿嬷浩劫，无需誓约
-      var up = Game.Upgrades['Elder Pledge'];
-      if (!up || !up.unlocked) return false;
-      if (up.getPrice() > Game.cookies) return false;
-      up.buy(true);
-      return Game.elderWrath === 0;
-    }
-
     function farmStart() {
       if (farmActive) return;
       if (Game.dragonLevel < 23) {
@@ -1044,12 +1061,6 @@
       }
       if (!farmTopBuilding()) {
         try { if (Game.Notify) Game.Notify('刷金饼干', '没有任何建筑可卖，无法启动'); } catch (e) {}
-        return;
-      }
-      // 先进入长者誓约（Elder Pledge 临时安抚），确保刷金期间不出红饼干
-      if (Game.elderWrath > 0 && !farmEnsurePledge()) {
-        console.warn('[AutoPilot Farm] 无法进入长者誓约（Elder Pledge 未解锁或买不起）');
-        try { if (Game.Notify) Game.Notify('刷金饼干', '阿嬷浩劫进行中，但 Elder Pledge 未解锁或买不起，无法安抚'); } catch (e) {}
         return;
       }
       farmActive = true;
@@ -1068,12 +1079,6 @@
     function farmTick() {
       if (!farmActive) return;
       if (!clickTimer) startClicker(); // 防止总开关中途把连点停了
-
-      // 维持长者誓约：30 分钟到期后阿嬷浩劫恢复，需续誓约防红饼干
-      if (Game.elderWrath > 0) {
-        if (farmEnsurePledge()) farmPhase = '已续长者誓约';
-        else { farmPhase = '誓约到期且买不起 Elder Pledge，暂停'; updateFarmBtn(); return; }
-      }
 
       // 1. 场上有金饼干 → 点爆并判定结果
       var shimmers = Game.shimmers;
@@ -1696,9 +1701,9 @@
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.6.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式');
+    console.log('[AutoPilot v5.7.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.6.0 已启动', '命运之手：预测升级为下两发，新增「自动刷到高价值」序列刷新');
+      if (Game.Notify) Game.Notify('AutoPilot v5.7.0 已启动', '连招触发自动开黄金开关，buff 结束自动关；刷金不再自动买长者誓约');
     } catch (e) {}
   }
 })();
