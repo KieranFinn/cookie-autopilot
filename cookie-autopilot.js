@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.5.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.6.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,11 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.6.0：命运之手预测扩展为「下两发」（种子序列偏移 +1 复刻，保留 combo 规划空间）；
+ *          命运面板新增刷序列按钮——用最廉价法术（动态选 getSpellCost 最低者，通常
+ *          是 Conjure Baked Goods）推进 spellsCastTotal，可单刷或自动刷到下两发内出现
+ *          高价值结果（CF/Frenzy/建筑特赐/饼干风暴/血怒）为止，魔力不足自动等回蓝；
+ *          顺带修复 Game.shimmerTypes 未初始化时预测面板空白的隐患
  * v5.5.0：新增花园自动育种（运行时暴力探测游戏原生 M.getMuts 动态发现配方，
  *          爬山法搜索「空格变异概率总和最大」的留空布局，全自动集齐 34 种图鉴；
  *          meddleweed 杂草/brownMold·crumbspore 孢子特例处理，育种期自动换木屑土）；
@@ -19,7 +24,7 @@
  *          保留大饼干连点）
  * v5.3.0：新增「命运之手预测」面板——用与游戏 castSpell 完全相同的种子随机序列
  *          （Math.seedrandom(Game.seed + '/' + spellsCastTotal)），提前算出下一次
- *          Force the Hand of Fate 的成功/失败与具体效果；只读显示，不自动施放
+ *          Force the Hand of Fate 的成功/失败与具体效果
  * v5.2.0：修复 Game.buffs 是对象不是数组——CpS 明细漏算全部 Buff（10% 偏差根源）、
  *          连招检测此前从未生效，现已一并修复
  * v5.1.9：集成 CpS 增益明细面板（逐项复现 CalculateGains + 残差对账行，总账恒等于游戏值）；
@@ -757,21 +762,17 @@
       }
     };
 
-    function fthofPredict() {
-      var wiz = Game.Objects['Wizard tower'];
-      if (!wiz || !wiz.minigame || !wiz.minigame.spells) return null;
-      var M = wiz.minigame;
-      var spell = M.spells['hand of fate'];
-      if (!spell) return null;
-      // 直接用游戏原生失败率：基础 15% × Magic adept/inept buff × 龙息
-      // Supreme Intellect 修正 + 场上每只金饼干 +15%（failFunc）
+    // 预测第 castNum 次施法（castNum = M.spellsCastTotal + 偏移）的 FtHoF 结果。
+    // 纯种子序列复刻，不触碰游戏状态；第二发起假设游戏状态（场上金饼干数影响
+    // 失败率、Dragonflight 影响 click frenzy 可抽性等）与当前一致，仅供参考。
+    function fthofPredictOne(M, spell, castNum) {
       var failChance = M.getFailChance(spell);
       // 金饼干初始化时的随机消耗：季节图（情人节/愚人节/复活节/万圣节 1 次）
       // + 位置 x、y 各 1 次；win 分支 noWrath、fail 分支 wrath，愤怒判定均不消耗随机
       var seasonPic = (Game.season === 'valentines' || Game.season === 'fools' ||
         Game.season === 'easter' || Game.season === 'halloween') ? 1 : 0;
 
-      Math.seedrandom(Game.seed + '/' + M.spellsCastTotal);
+      Math.seedrandom(Game.seed + '/' + castNum);
       var win = Math.random() < (1 - failChance);
       var force, i;
       if (win) {
@@ -793,16 +794,110 @@
         force = fchoices[Math.floor(Math.random() * fchoices.length)];
       }
       Math.seedrandom(); // 与 castSpell 一致：施放后还原为非种子随机
+      return { win: win, force: force, failChance: failChance, castNum: castNum };
+    }
+
+    // 高价值结果（「高额的倍率加持」）：命中即停刷
+    var FTHOF_GOOD = {
+      win: ['click frenzy', 'frenzy', 'building special', 'cookie storm', 'cookie storm drop'],
+      fail: ['blood frenzy'] // 血怒 Elder frenzy（×666）虽在失败分支，价值极高
+    };
+    function fthofIsGood(p) {
+      if (!p) return false;
+      return FTHOF_GOOD[p.win ? 'win' : 'fail'].indexOf(p.force) !== -1;
+    }
+
+    function fthofPredict() {
+      var wiz = Game.Objects['Wizard tower'];
+      if (!wiz || !wiz.minigame || !wiz.minigame.spells) return null;
+      var M = wiz.minigame;
+      var spell = M.spells['hand of fate'];
+      if (!spell) return null;
+      // 下两发：种子 = Game.seed + '/' + (spellsCastTotal + 偏移)
+      var casts = [
+        fthofPredictOne(M, spell, M.spellsCastTotal),
+        fthofPredictOne(M, spell, M.spellsCastTotal + 1)
+      ];
+      // 消耗最低的法术（用于刷序列；任何法术施放都会推进 spellsCastTotal）
+      var cheap = null, cheapCost = Infinity;
+      for (var k in M.spells) {
+        var c = M.getSpellCost(M.spells[k]);
+        if (c < cheapCost) { cheapCost = c; cheap = M.spells[k]; }
+      }
+      var gn = Game.shimmerTypes && Game.shimmerTypes['golden'] ? Game.shimmerTypes['golden'].n : 0;
       return {
-        win: win,
-        force: force,
-        failChance: failChance,
-        goldOnScreen: Game.shimmerTypes['golden'].n,
-        cost: M.getSpellCost(spell),
+        casts: casts,
+        goldOnScreen: gn,
+        cheap: cheap,
+        cheapCost: cheapCost,
         magic: M.magic,
         magicM: M.magicM,
         castTotal: M.spellsCastTotal
       };
+    }
+
+    // ---------- 刷序列：用最廉价法术推进 spellsCastTotal ----------
+    var fthofRerollTimer = null;
+    var fthofRerollCasts = 0;
+    var FTHOF_REROLL_CAP = 200; // 单次自动刷的安全上限
+
+    // 静默施放：屏蔽法术自己的 Notify/音效，防止刷序列时刷屏
+    function fthofCastQuiet(M, spell) {
+      var on = Game.Notify, ps = window.PlaySound;
+      Game.Notify = function () {};
+      window.PlaySound = function () {};
+      try { M.castSpell(spell); } catch (e) {}
+      Game.Notify = on;
+      window.PlaySound = ps;
+    }
+
+    // 手动刷一次（面板按钮）；返回是否成功施放
+    function fthofRerollOnce() {
+      var p = fthofPredict();
+      if (!p || !p.cheap) return false;
+      var M = Game.Objects['Wizard tower'].minigame;
+      if (M.magic < p.cheapCost) return false;
+      fthofCastQuiet(M, p.cheap);
+      fthofRender();
+      return true;
+    }
+
+    function fthofAutoRerollStop(reason) {
+      if (fthofRerollTimer) { clearInterval(fthofRerollTimer); fthofRerollTimer = null; }
+      if (reason) {
+        console.log('[AutoPilot FtHoF] 停止刷序列：' + reason + '（共施放 ' + fthofRerollCasts + ' 次）');
+        try { if (Game.Notify) Game.Notify('命运之手刷序列', reason + '（共 ' + fthofRerollCasts + ' 次）'); } catch (e) {}
+      }
+      fthofRender();
+    }
+
+    function fthofAutoRerollToggle() {
+      if (fthofRerollTimer) { fthofAutoRerollStop('手动取消'); return; }
+      var p0 = fthofPredict();
+      if (!p0) {
+        try { if (Game.Notify) Game.Notify('命运之手刷序列', '需要魔法塔小游戏（1 级以上 Wizard tower）'); } catch (e) {}
+        return;
+      }
+      fthofRerollCasts = 0;
+      console.log('[AutoPilot FtHoF] 开始刷序列：用最廉价法术推进，直到下两发内出现高价值结果');
+      fthofRerollTimer = setInterval(function () {
+        try {
+          var p = fthofPredict();
+          if (!p || !p.cheap) { fthofAutoRerollStop('未检测到魔法塔'); return; }
+          var hit = fthofIsGood(p.casts[0]) ? 1 : (fthofIsGood(p.casts[1]) ? 2 : 0);
+          if (hit) {
+            fthofAutoRerollStop('第 ' + hit + ' 发已出「' +
+              ((FTHOF_NAMES[p.casts[hit - 1].win ? 'win' : 'fail'])[p.casts[hit - 1].force] || p.casts[hit - 1].force) + '」，序列就位');
+            return;
+          }
+          if (fthofRerollCasts >= FTHOF_REROLL_CAP) { fthofAutoRerollStop('已达 ' + FTHOF_REROLL_CAP + ' 次安全上限'); return; }
+          var M = Game.Objects['Wizard tower'].minigame;
+          if (M.magic < p.cheapCost) { fthofRender(); return; } // 魔力不足，等回蓝自动继续
+          fthofCastQuiet(M, p.cheap);
+          fthofRerollCasts++;
+          fthofRender();
+        } catch (e) {}
+      }, 400);
     }
 
     function fthofRender() {
@@ -813,18 +908,34 @@
       if (!p) {
         html = '<div style="color:#999;">未检测到魔法塔小游戏。<br>需要至少 1 座 1 级以上的魔法塔（Wizard tower）解锁魔法系统。</div>';
       } else {
-        var name = (FTHOF_NAMES[p.win ? 'win' : 'fail'])[p.force] || p.force;
+        var labels = ['下一发', '第二发'];
+        for (var ci = 0; ci < 2; ci++) {
+          var pc = p.casts[ci];
+          var name = (FTHOF_NAMES[pc.win ? 'win' : 'fail'])[pc.force] || pc.force;
+          var good = fthofIsGood(pc);
+          html += '<div style="padding:6px 8px;background:rgba(0,0,0,0.35);border-radius:4px;margin-bottom:6px;' +
+            (good ? 'border:1px solid #d4a017;' : '') + '">';
+          html += labels[ci] + '：<b style="font-size:14px;color:' + (pc.win ? '#6f6' : '#f66') + ';">' +
+            (pc.win ? '✔ ' : '✘ ') + name + '</b>' + (good ? ' <span style="color:#d4a017;">★高价值</span>' : '') + '<br>';
+          html += '<span style="color:#888;font-size:11px;">失败率 ' + (pc.failChance * 100).toFixed(1) + '%（种子 #' + pc.castNum + '）' +
+            (ci === 1 ? '　※假设状态与当前一致' : '') + '</span></div>';
+        }
         html += '<div style="padding:6px 8px;background:rgba(0,0,0,0.35);border-radius:4px;margin-bottom:6px;">';
-        html += '下一次「命运之手」结果：<br><b style="font-size:15px;color:' + (p.win ? '#6f6' : '#f66') + ';">' +
-          (p.win ? '✔ 成功 → ' : '✘ 失败 → ') + name + '</b><br>';
-        html += '当前失败率：<b>' + (p.failChance * 100).toFixed(1) + '%</b>（基础 15%' +
-          (p.goldOnScreen > 0 ? ' + 场上金饼干 ×' + p.goldOnScreen : '') + '）<br>';
-        html += '魔力：<b' + (p.magic >= p.cost ? ' style="color:#6f6;"' : ' style="color:#f66;"') + '>' +
-          Math.floor(p.magic) + '/' + Math.floor(p.magicM) + '</b>' +
-          (p.magic >= p.cost ? '（可施放，消耗 ' + p.cost.toFixed(0) + '）' : '（不够，需 ' + p.cost.toFixed(0) + '）');
+        html += '魔力：<b' + (p.magic >= p.cheapCost ? ' style="color:#6f6;"' : ' style="color:#f66;"') + '>' +
+          Math.floor(p.magic) + '/' + Math.floor(p.magicM) + '</b>　刷序列每次耗魔 <b>' + p.cheapCost.toFixed(0) + '</b>' +
+          '（' + (p.cheap ? (p.cheap.name || '最廉价法术') : '—') + '）<br>';
+        html += '场上金饼干 ×' + p.goldOnScreen + (p.goldOnScreen > 0 ? '（每只 +15% 失败率）' : '');
         html += '</div>';
-        html += '<div style="color:#888;font-size:11px;">种子：存档种子 + 施放总数（当前 ' + p.castTotal + ' 次）。<br>' +
-          '每次施放任意法术、刷新/读档后预测都会重新计算；本面板只读，不会替你施放。</div>';
+        // 刷序列按钮（面板每 500ms 重绘，用 inline 事件挂到对外接口上）
+        var rerolling = !!fthofRerollTimer;
+        html += '<div style="margin-bottom:6px;">' +
+          '<span onclick="CookieAutoPilot.fthof.reroll()" style="display:inline-block;padding:3px 10px;margin-right:6px;border-radius:4px;cursor:pointer;background:#2563b9;color:#fff;font-weight:bold;">刷一次</span>' +
+          '<span onclick="CookieAutoPilot.fthof.autoReroll()" style="display:inline-block;padding:3px 10px;border-radius:4px;cursor:pointer;background:' +
+          (rerolling ? '#d4a017' : '#7c3aed') + ';color:#fff;font-weight:bold;">' +
+          (rerolling ? '刷序列中×' + fthofRerollCasts + '（点击停止）' : '自动刷到高价值') + '</span></div>';
+        html += '<div style="color:#888;font-size:11px;">刷序列 = 施放最廉价法术推进施放计数（每次施法，无论成败，序列前进一格），<br>' +
+          '直到下两发内出现 CF/Frenzy/建筑特赐/饼干风暴/血怒。命中后请<b>停止点金饼干</b>，<br>' +
+          '按 combo 需要择机手动施放命运之手。本面板预测只读，不自动施放命运之手。</div>';
       }
       fthofPanel.innerHTML = html;
     }
@@ -856,6 +967,8 @@
 
     function removeFthofUI() {
       if (fthofTimer) clearInterval(fthofTimer);
+      if (fthofRerollTimer) clearInterval(fthofRerollTimer);
+      fthofRerollTimer = null;
       if (fthofBtn && fthofBtn.parentNode) fthofBtn.parentNode.removeChild(fthofBtn);
       if (fthofPanel && fthofPanel.parentNode) fthofPanel.parentNode.removeChild(fthofPanel);
       fthofBtn = fthofPanel = fthofTimer = null;
@@ -1547,7 +1660,9 @@
       },
       fthof: {
         toggle: toggleFthofPanel,
-        predict: fthofPredict
+        predict: fthofPredict,
+        reroll: fthofRerollOnce,        // 用最廉价法术手动刷一次序列
+        autoReroll: fthofAutoRerollToggle // 自动刷到下两发内出现高价值结果
       },
       farm: {
         start: farmStart,
@@ -1581,9 +1696,9 @@
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.5.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 预测，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.garden.start()/.garden.status()/.farm.start()/.stop()');
+    console.log('[AutoPilot v5.6.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.5.0 已启动', '新增：花园自动育种（左上「花园」按钮）；刷金前自动进入长者誓约防红饼干');
+      if (Game.Notify) Game.Notify('AutoPilot v5.6.0 已启动', '命运之手：预测升级为下两发，新增「自动刷到高价值」序列刷新');
     } catch (e) {}
   }
 })();
