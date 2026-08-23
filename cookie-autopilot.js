@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.3.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.4.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,9 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.4.0：新增「刷金饼干」独立模式（龙之宝珠+飞龙在天循环卖建筑召唤金饼干，
+ *          出正向增益即换回 Radiant Appetite+牛奶之息并结束；期间暂停主自动化、
+ *          保留大饼干连点）
  * v5.3.0：新增「命运之手预测」面板——用与游戏 castSpell 完全相同的种子随机序列
  *          （Math.seedrandom(Game.seed + '/' + spellsCastTotal)），提前算出下一次
  *          Force the Hand of Fate 的成功/失败与具体效果；只读显示，不自动施放
@@ -318,7 +321,7 @@
 
     // ---------- 5. 主循环（固定节拍） ----------
     function tick() {
-      if (stopped || !enabled) return;
+      if (stopped || !enabled || farmActive) return;
       try {
         // --- 黄金饼干 / 红饼干 / 驯鹿：出现即点 ---
         var shimmers = Game.shimmers;
@@ -851,6 +854,166 @@
       fthofBtn = fthofPanel = fthofTimer = null;
     }
 
+    // ---------- 龙之宝珠刷金饼干（独立模式：暂停主自动化，保留大饼干连点） ----------
+    // 流程：装备 龙之宝珠(19)+飞龙在天(10) → 无 buff 且场上无金饼干时循环
+    // "卖 1 座最高级建筑 + 买回"（龙之宝珠 10% 几率召唤金饼干，main.js 8201-8214）→
+    // 金饼干出现即点，出正向增益 buff 即换回 Radiant Appetite(15)+牛奶之息(1)，结束本次。
+    // 切换光环按游戏规则献祭 1 座最高级建筑（main.js 15241），不做免费切换。
+    var farmBtn = null;
+    var farmActive = false;
+    var farmTimer = null;
+    var farmCycles = 0;          // 本次已卖出次数
+    var farmPhase = '';          // 当前阶段说明
+    var FARM_MAX_SELLS = 200;    // 单次运行安全上限
+    var FARM_AURA_ON = [19, 10]; // 刷金光环：龙之宝珠 + 飞龙在天
+    var FARM_AURA_OFF = [15, 1]; // 结束换回：Radiant Appetite + 牛奶之息
+    var FARM_GOOD_BUFFS = ['Frenzy', 'Click frenzy', 'Dragonflight', 'Dragon Harvest'];
+
+    // 最高级（id 最大）且数量 >0 的建筑——与游戏内"最高级建筑"判定一致
+    function farmTopBuilding() {
+      var hb = 0;
+      for (var i in Game.Objects) { if (Game.Objects[i].amount > 0) hb = Game.Objects[i]; }
+      return hb;
+    }
+
+    // 切换光环（复刻游戏 UI 的代价：献祭 1 座最高级建筑）
+    function farmSetAura(slot, id) {
+      if (Game.dragonLevel < id + 4) return false; // 光环未解锁
+      var cur = slot === 0 ? Game.dragonAura : Game.dragonAura2;
+      if (cur === id) return true;
+      var hb = farmTopBuilding();
+      if (hb) hb.sacrifice(1);
+      if (slot === 0) Game.dragonAura = id; else Game.dragonAura2 = id;
+      Game.recalculateGains = 1;
+      return true;
+    }
+
+    // 正向增益 buff 判定（Lucky/饼干风暴/胡言乱语不算，继续刷）
+    function farmGoodBuff() {
+      for (var bn in Game.buffs) {
+        var b = Game.buffs[bn];
+        if (!b || !b.name) continue;
+        for (var k = 0; k < FARM_GOOD_BUFFS.length; k++) {
+          if (b.name === FARM_GOOD_BUFFS[k]) return b.name;
+        }
+        if (b.name.indexOf('Building special') !== -1) return b.name;
+      }
+      return '';
+    }
+
+    function farmStart() {
+      if (farmActive) return;
+      if (Game.dragonLevel < 23) {
+        console.warn('[AutoPilot Farm] 龙等级不足：龙之宝珠需要 23 级（当前 ' + Game.dragonLevel + '）');
+        try { if (Game.Notify) Game.Notify('刷金饼干', '需要龙 23 级解锁龙之宝珠（当前 ' + Game.dragonLevel + ' 级）'); } catch (e) {}
+        return;
+      }
+      if (!farmTopBuilding()) {
+        try { if (Game.Notify) Game.Notify('刷金饼干', '没有任何建筑可卖，无法启动'); } catch (e) {}
+        return;
+      }
+      farmActive = true;
+      farmCycles = 0;
+      farmPhase = '装备光环';
+      startClicker(); // 保留大饼干连点（主自动化已被 farmActive 暂停）
+      var ok1 = farmSetAura(0, FARM_AURA_ON[0]);
+      var ok2 = farmSetAura(1, FARM_AURA_ON[1]);
+      if (!ok1 || !ok2) { farmFinish('光环装备失败（龙之宝珠/飞龙在天未解锁）', false); return; }
+      updateFarmBtn();
+      farmTimer = setInterval(function () { try { farmTick(); } catch (e) {} }, 300);
+      console.log('[AutoPilot Farm] 开始：龙之宝珠 + 飞龙在天，循环卖建筑召唤金饼干');
+      try { if (Game.Notify) Game.Notify('刷金饼干 开始', '龙之宝珠+飞龙在天已装备；再点一次「刷金」按钮可取消'); } catch (e) {}
+    }
+
+    function farmTick() {
+      if (!farmActive) return;
+      if (!clickTimer) startClicker(); // 防止总开关中途把连点停了
+
+      // 1. 场上有金饼干 → 点爆并判定结果
+      var shimmers = Game.shimmers;
+      for (var i = 0; i < shimmers.length; i++) {
+        var sh = shimmers[i];
+        if (sh && sh.type === 'golden' && sh.pop) {
+          sh.pop();
+          var good = farmGoodBuff();
+          if (good) { farmFinish('获得正向增益：' + good, true); return; }
+          farmPhase = '金饼干未给增益，继续刷';
+        }
+      }
+
+      // 2. 召唤条件：无 buff + 场上无金饼干（龙之宝珠硬条件）
+      var buffsN = 0;
+      for (var bn in Game.buffs) { if (Game.buffs[bn]) buffsN++; }
+      if (buffsN > 0) { farmPhase = '等待现有 buff 结束'; return; }
+      if (Game.shimmerTypes['golden'].n > 0) return;
+
+      if (farmCycles >= FARM_MAX_SELLS) { farmFinish('已达 ' + FARM_MAX_SELLS + ' 次卖出上限，放弃本次', false); return; }
+      var hb = farmTopBuilding();
+      if (!hb) { farmFinish('没有建筑可卖', false); return; }
+      if (hb.amount >= 2 || hb.getPrice() <= Game.cookies) {
+        hb.sell(1);
+        farmCycles++;
+        if (hb.getPrice() <= Game.cookies) hb.buy(1); // 买回保持循环稳定
+        farmPhase = '卖 ' + hb.name + ' 召唤中（第 ' + farmCycles + ' 次）';
+      } else {
+        farmPhase = '攒钱买回 ' + hb.name + ' 中（第 ' + farmCycles + ' 次）';
+      }
+      updateFarmBtn();
+    }
+
+    function farmFinish(reason, success) {
+      if (!farmActive) return;
+      farmActive = false;
+      if (farmTimer) { clearInterval(farmTimer); farmTimer = null; }
+      // 换回 Radiant Appetite + 牛奶之息（同样按规则献祭）
+      farmSetAura(0, FARM_AURA_OFF[0]);
+      farmSetAura(1, FARM_AURA_OFF[1]);
+      if (!enabled) stopClicker();          // 总开关关着则恢复连点停止状态
+      if (enabled && !stopped) schedule();  // 恢复主自动化循环
+      updateFarmBtn();
+      console.log('[AutoPilot Farm] 结束：' + reason + '（共卖出 ' + farmCycles + ' 次）');
+      try {
+        if (Game.Notify) Game.Notify(success ? '刷金饼干 成功 ✔' : '刷金饼干 结束', reason + '，已换回 Radiant Appetite + 牛奶之息');
+      } catch (e) {}
+    }
+
+    function farmStatus() {
+      return {
+        active: farmActive,
+        cycles: farmCycles,
+        phase: farmPhase,
+        auras: [Game.dragonAuras[Game.dragonAura].name, Game.dragonAuras[Game.dragonAura2].name]
+      };
+    }
+
+    function createFarmBtn() {
+      farmBtn = document.createElement('div');
+      farmBtn.id = 'cookie-autopilot-farm-btn';
+      farmBtn.style.cssText = 'position:fixed;top:10px;right:154px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      updateFarmBtn();
+      farmBtn.onclick = function () {
+        if (farmActive) farmFinish('手动取消', false);
+        else farmStart();
+      };
+      document.body.appendChild(farmBtn);
+    }
+    function updateFarmBtn() {
+      if (!farmBtn) return;
+      if (farmActive) {
+        farmBtn.textContent = '刷金中×' + farmCycles;
+        farmBtn.style.background = '#d4a017';
+      } else {
+        farmBtn.textContent = '刷金';
+        farmBtn.style.background = '#6b7280';
+      }
+    }
+    function removeFarmUI() {
+      if (farmTimer) clearInterval(farmTimer);
+      farmActive = false;
+      if (farmBtn && farmBtn.parentNode) farmBtn.parentNode.removeChild(farmBtn);
+      farmBtn = null;
+    }
+
     schedule();
 
     // ---------- 对外接口 ----------
@@ -863,6 +1026,7 @@
         removeMasterBtn();
         removeCpsUI();
         removeFthofUI();
+        removeFarmUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
         delete window.CookieAutoPilot;
@@ -895,6 +1059,11 @@
         toggle: toggleFthofPanel,
         predict: fthofPredict
       },
+      farm: {
+        start: farmStart,
+        stop: function () { farmFinish('手动取消', false); },
+        status: farmStatus
+      },
       setMode: function (m) {
         if (m !== 'strict' && m !== 'fast') {
           console.warn('[AutoPilot] 模式必须是 strict 或 fast');
@@ -911,12 +1080,13 @@
 
     createModeBtn();
     createMasterBtn();
+    createFarmBtn();
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.3.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上角：CpS=增益明细，命运=FtHoF 预测 | 右上角：紫色=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.fthof.predict()/.setEnabled()/.setMode()/.stop()');
+    console.log('[AutoPilot v5.4.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 预测 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式 | 控制台：CookieAutoPilot.farm.start()/.farm.status()/.stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.3.0 已启动', '新增：命运之手结果预测（左上角「命运」按钮）');
+      if (Game.Notify) Game.Notify('AutoPilot v5.4.0 已启动', '新增：刷金饼干模式（右上角「刷金」按钮，龙之宝珠+飞龙在天）');
     } catch (e) {}
   }
 })();
