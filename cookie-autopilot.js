@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.7.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.8.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,11 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.8.0：新增 Godzamok「左脚踩右脚」自动叠层——连招触发（F+CF 及以上）且
+ *          Godzamok 在万神殿上岗时，每拍同帧执行「全卖→立刻买回」循环：CpS 在
+ *          下一帧重算前即恢复，而每次 sell() 都按卖出数叠加 Devastation 点击威力
+ *          （钻石位 +1%/座），10 秒窗口内层数螺旋上升；买卖损耗（默认 50% 回收）
+ *          远小于连招点击收益。可用 CookieAutoPilot.combo.godzamok(false) 关闭
  * v5.7.0：移除刷金前自动长者誓约（回滚 v5.5.0 该设定，是否安抚阿嬷由你决定）；
  *          连招辅助新增黄金开关联动：连招触发（F+CF 及以上）自动开 Golden switch
  *          （+50% CpS 强化点击收益），buff 全部结束后自动关闭恢复金饼干刷新；
@@ -456,8 +461,19 @@
       if (level >= 4 && !Game.Has('Golden switch [off]')) goldenSwitchToggle(true);
       if (level === 0 && goldenSwitchAuto && Game.Has('Golden switch [off]')) goldenSwitchToggle(false);
 
+      // Godzamok 左脚踩右脚：连招期间每拍同帧全卖全买，Devastation 层数螺旋上升
+      if (level >= 4 && godzamokAuto) godzamokLoop();
+
       // 所有 buff 消失后重置提醒状态
-      if (level === 0) comboAlerted = false;
+      if (level === 0) {
+        comboAlerted = false;
+        if (godzamokRan) {
+          console.log('[AutoPilot Combo] 连招结束：Godzamok 共循环 ' + godzamokCycles + ' 次');
+          comboHistory.push({ time: Date.now(), action: 'godzamokLoop', cycles: godzamokCycles });
+        }
+        godzamokRan = false;
+        godzamokCycles = 0;
+      }
     }
 
     function sellForGodzamok() {
@@ -494,6 +510,45 @@
 
     function getComboHistory() {
       return comboHistory.slice(-20); // 最近 20 条
+    }
+
+    // ---------- Godzamok「左脚踩右脚」自动叠层（连招期间自动运行） ----------
+    // 原理（main.js 8187-8198 已核实）：每次 sell() 调用按卖出总数给 Devastation
+    // 叠加 multClick += sold×1%（钻石位；红宝石 0.5%、翡翠 0.25%），持续 10s 且
+    // max:true 续期。同一帧内全卖再立刻买回，CpS 在下一帧重算前恢复，买卖损耗
+    // 恒定（回收率见 getSellMultiplier），而点击收益随层数螺旋上升。
+    var godzamokAuto = true;          // CookieAutoPilot.combo.godzamok(false) 可关
+    var godzamokRan = false;          // 本连招窗口是否已启动过
+    var godzamokCycles = 0;           // 本窗口已循环次数
+    var GODZAMOK_CYCLES_PER_TICK = 3; // 每拍最多循环次数（防卡顿）
+    var GODZAMOK_MAX_CYCLES = 2000;   // 单窗口安全上限
+
+    function godzamokLoop() {
+      if (!Game.hasGod || !Game.hasGod('ruin')) return; // Godzamok 未上万神殿
+      if (godzamokCycles >= GODZAMOK_MAX_CYCLES) return;
+      if (!godzamokRan) {
+        godzamokRan = true;
+        console.log('[AutoPilot Combo] Godzamok 叠层循环启动（同帧全卖全买）');
+        try { if (Game.Notify) Game.Notify('连招辅助 🏚', 'Godzamok 叠层循环启动：同帧全卖全买中'); } catch (e) {}
+      }
+      var ps = window.PlaySound;
+      window.PlaySound = function () {}; // 屏蔽买卖音效
+      try {
+        for (var c = 0; c < GODZAMOK_CYCLES_PER_TICK; c++) {
+          var didAny = false;
+          for (var i = 0; i < Game.ObjectsById.length; i++) {
+            var b = Game.ObjectsById[i];
+            var amt = b.amount;
+            if (amt <= 0) continue;
+            b.sell(amt);   // Devastation 叠加 amt×1%
+            b.buy(amt);    // 立刻买回（钱不够时 buy 内部自动买到买得起为止，自然收敛）
+            didAny = true;
+          }
+          if (!didAny) break;
+          godzamokCycles++;
+        }
+      } catch (e) {}
+      window.PlaySound = ps;
     }
 
     // ---------- CpS 增益明细面板（只读显示，不受总开关控制） ----------
@@ -1661,7 +1716,12 @@
       combo: {
         sellForGodzamok: sellForGodzamok,
         status: getComboStatus,
-        history: getComboHistory
+        history: getComboHistory,
+        godzamok: function (on) { // 连招期间自动叠层开关（默认开）
+          godzamokAuto = !!on;
+          console.log('[AutoPilot Combo] Godzamok 自动叠层：' + (godzamokAuto ? '开启' : '关闭'));
+          return godzamokAuto;
+        }
       },
       fthof: {
         toggle: toggleFthofPanel,
@@ -1701,9 +1761,9 @@
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.7.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式');
+    console.log('[AutoPilot v5.8.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金=龙之宝珠刷金饼干，紫=总开关，绿/蓝=模式');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.7.0 已启动', '连招触发自动开黄金开关，buff 结束自动关；刷金不再自动买长者誓约');
+      if (Game.Notify) Game.Notify('AutoPilot v5.8.0 已启动', '新增：连招期间 Godzamok 自动叠层（同帧全卖全买）');
     } catch (e) {}
   }
 })();
