@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.10.0 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.10.1 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.10.1：Godzamok 卖楼保护小游戏建筑（农场/神殿/魔法塔/银行）——卖掉神殿会
+ *          连同万神殿和槽里的 Godzamok 一起消失，叠层、手动卖楼、刷哥斯马克统一保护
  * v5.10.0：新增「终极爆发」按钮（右上）：一键开黄金开关 + 糖块狂热（手动扣糖块
  *          绕过确认弹窗）+ 银行三连贷（遵守办公室贷款槽位数）+ Stretch Time 延长
  *          全部 buff 10%；延长法术施放前用种子序列预测成败（win/fail 判定即
@@ -488,13 +490,17 @@
       }
     }
 
+    // 小游戏建筑保护名单：卖了会丢小游戏（神殿卖掉=万神殿连同 Godzamok 一起没了）
+    var MINIGAME_BUILDINGS = ['Farm', 'Temple', 'Wizard tower', 'Bank'];
+    function isMinigameBuilding(b) { return MINIGAME_BUILDINGS.indexOf(b.name) !== -1; }
+
     function sellForGodzamok() {
       if (!Game.ObjectsById) return [];
       var totalCps = Game.cookiesPs;
       if (totalCps <= 0) return [];
       var sold = [];
       Game.ObjectsById.forEach(function (b) {
-        if (b.name === 'Wizard tower') return; // 保护魔法塔
+        if (isMinigameBuilding(b)) return; // 保护小游戏建筑
         var bCps = b.storedTotalCps || 0;
         // 只卖产生 <2% CpS 且数量 >0 的建筑
         if (bCps < totalCps * 0.02 && b.amount > 0) {
@@ -552,6 +558,7 @@
             var b = Game.ObjectsById[i];
             var amt = b.amount;
             if (amt <= 0) continue;
+            if (isMinigameBuilding(b)) continue; // 保护农场/神殿/魔法塔/银行
             b.sell(amt);   // Devastation 叠加 amt×1%
             b.buy(amt);    // 立刻买回（钱不够时 buy 内部自动买到买得起为止，自然收敛）
             didAny = true;
@@ -1350,6 +1357,7 @@
         var b = Game.ObjectsById[i];
         var amt = b.amount;
         if (amt <= 0) continue;
+        if (isMinigameBuilding(b)) continue; // 保护农场/神殿/魔法塔/银行
         b.sell(amt);   // Devastation 叠加 amt×1%
         b.buy(amt);    // 同帧买回（钱不够时 buy 内部买到买得起为止，自然收敛）
         sold += amt;
