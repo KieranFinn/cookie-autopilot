@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.9.1 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.10.0 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,10 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.10.0：新增「终极爆发」按钮（右上）：一键开黄金开关 + 糖块狂热（手动扣糖块
+ *          绕过确认弹窗）+ 银行三连贷（遵守办公室贷款槽位数）+ Stretch Time 延长
+ *          全部 buff 10%；延长法术施放前用种子序列预测成败（win/fail 判定即
+ *          castSpell 的第一个 random），预测失败则跳过——失败会把 buff 缩短 20%
  * v5.9.1：重写「刷哥斯马克」为纯叠层器（去除连招流程）：Godzamok 入钻石槽后，
  *          每 200ms 执行 5 轮同帧全卖全买，只靠高频买卖在 Devastation 10s 续期内
  *          把点击倍率叠到极限；按钮实时显示当前 Devastation 倍率
@@ -1228,6 +1232,90 @@
       farmBtn = null;
     }
 
+    // ---------- 终极爆发按钮（手动一键：黄金开关 + 糖狂潮 + 三连贷 + 延长 buff） ----------
+    // Stretch Time 施放前用与 castSpell 相同的种子序列预测成败（win/fail 判定就是
+    // 第一个 Math.random()），预测失败则跳过——失败会把全部 buff 缩短 20%，
+    // 连招窗口里等于自残。不自动刷序列（那会移动命运之手预测序列）。
+    var ultBtn = null;
+
+    // 预测任意法术下一发的成败（只读，不改变任何状态）
+    function predictSpellWin(M, spell) {
+      var failChance = M.getFailChance(spell);
+      Math.seedrandom(Game.seed + '/' + M.spellsCastTotal);
+      var win = Math.random() < (1 - failChance);
+      Math.seedrandom();
+      return win;
+    }
+
+    function ultimateBurst() {
+      var done = [], skipped = [];
+
+      // 1. 黄金开关 → 开（+50% CpS；连招结束时会被联动逻辑自动关回）
+      if (!Game.Has('Golden switch [off]')) {
+        if (goldenSwitchToggle(true)) done.push('黄金开关 开');
+        else skipped.push('黄金开关（未解锁或存款不足）');
+      }
+
+      // 2. 糖块狂热（CpS ×3 一小时；1 糖块，每次飞升一次；手动扣糖块绕过确认弹窗）
+      var sf = Game.Upgrades['Sugar frenzy'];
+      if (sf && sf.unlocked && !sf.bought && !Game.hasBuff('sugar frenzy')) {
+        if (Game.lumps >= 1) {
+          Game.lumps -= 1;
+          Game.recalculateGains = 1;
+          sf.buy(1);
+          done.push('糖块狂热 ×3');
+        } else skipped.push('糖块狂热（糖块不足）');
+      } else skipped.push('糖块狂热（本次飞升已用/未解锁）');
+
+      // 3. 银行三连贷（遵守办公室贷款槽位：loan1 需 L2+，loan2 需 L4+，loan3 需 L5+）
+      var bank = Game.Objects['Bank'];
+      if (bank && bank.minigame && bank.minigame.takeLoan) {
+        var BM = bank.minigame;
+        var took = 0;
+        if (BM.officeLevel > 1 && BM.takeLoan(1)) took++;
+        if (BM.officeLevel > 3 && BM.takeLoan(2)) took++;
+        if (BM.officeLevel > 4 && BM.takeLoan(3)) took++;
+        if (took > 0) done.push('贷款 ×' + took);
+        else skipped.push(BM.officeLevel > 1 ? '贷款（已有贷款在身）' : '贷款（办公室等级不足）');
+      } else skipped.push('贷款（未检测到银行小游戏）');
+
+      // 4. Stretch Time 延长全部 buff 10%（预测失败/无 buff/魔力不足则跳过）
+      var wiz = Game.Objects['Wizard tower'];
+      if (wiz && wiz.minigame && wiz.minigame.spells) {
+        var M = wiz.minigame;
+        var spell = M.spells['stretch time'];
+        var buffsN = 0;
+        for (var bn in Game.buffs) { if (Game.buffs[bn]) buffsN++; }
+        var cost = M.getSpellCost(spell);
+        if (buffsN === 0) skipped.push('延长 buff（当前无 buff）');
+        else if (M.magic < cost) skipped.push('延长 buff（魔力不足 ' + Math.floor(M.magic) + '/' + cost + '）');
+        else if (!predictSpellWin(M, spell)) skipped.push('延长 buff（预测本次施放失败，已跳过——可在命运面板手动刷序列）');
+        else {
+          fthofCastQuiet(M, spell);
+          done.push('延长 buff +10%（注意：命运之手预测序列已前移一格）');
+        }
+      } else skipped.push('延长 buff（未检测到魔法塔）');
+
+      var msg = '已触发：' + (done.join('，') || '无');
+      if (skipped.length) msg += '　|　跳过：' + skipped.join('，');
+      console.log('[AutoPilot Ultimate] ' + msg);
+      try { if (Game.Notify) Game.Notify('终极爆发 🔥', msg, 0, 10); } catch (e) {}
+      return { done: done, skipped: skipped };
+    }
+
+    function createUltBtn() {
+      ultBtn = document.createElement('div');
+      ultBtn.id = 'cookie-autopilot-ult-btn';
+      ultBtn.textContent = '终极爆发';
+      ultBtn.style.cssText = 'position:fixed;top:10px;right:318px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;background:#dc2626;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      ultBtn.onclick = function () { ultimateBurst(); };
+      document.body.appendChild(ultBtn);
+    }
+    function removeUltBtn() {
+      if (ultBtn && ultBtn.parentNode) ultBtn.parentNode.removeChild(ultBtn);
+      ultBtn = null;
+    }
+
     // ---------- 刷哥斯马克（手动叠层器：10s 窗口内最高频买卖，Devastation 叠到极限） ----------
     // 原理（main.js 8187-8198）：每次 sell() 按卖出总数叠加 Devastation
     // multClick += sold×1%（钻石位；红宝石 0.5%、翡翠 0.25%），max:true 续期 10s。
@@ -1824,6 +1912,7 @@
         removeFthofUI();
         removeFarmUI();
         removeGzUI();
+        removeUltBtn();
         removeGardenUI();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
@@ -1874,6 +1963,12 @@
         stop: function () { gzStop('手动停止'); },
         status: gzStatus
       },
+      ultimate: ultimateBurst,
+      predictSpellWin: function (spellName) {
+        var wiz = Game.Objects['Wizard tower'];
+        if (!wiz || !wiz.minigame || !wiz.minigame.spells || !wiz.minigame.spells[spellName]) return null;
+        return predictSpellWin(wiz.minigame, wiz.minigame.spells[spellName]);
+      },
       garden: {
         start: function () { gardenSetOn(true); },
         stop: function () { gardenSetOn(false); },
@@ -1898,13 +1993,14 @@
     createMasterBtn();
     createFarmBtn();
     createGzBtn();
+    createUltBtn();
     createGardenBtn();
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.9.1] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：刷金/刷哥斯马克（Devastation 叠层），紫=总开关，绿/蓝=模式');
+    console.log('[AutoPilot v5.10.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：终极爆发/刷金/刷哥斯马克，紫=总开关，绿/蓝=模式');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.9.1 已启动', '刷哥斯马克：纯叠层器（高频全卖全买，按钮实时显示 Devastation 倍率）');
+      if (Game.Notify) Game.Notify('AutoPilot v5.10.0 已启动', '新增：终极爆发按钮（黄金开关+糖狂潮+三连贷+延长 buff，延长法术带成败预测）');
     } catch (e) {}
   }
 })();
