@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.1.7 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.1.8 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,7 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.1.8：新增总开关按钮（一键暂停/恢复全部自动化），为连招开发模块预留互斥入口
  * v5.1.7：集成连招辅助（buff 检测 + Godzamok 一键卖建筑 + 连招统计）
  * v5.1.6：修复 CollectWrinklers() 误杀所有虫 + 季节升级全部黑名单 + 虫槽位越界修复
  * v5.1.5：buyTimes 环形缓冲区、Fortune 单双引号兼容、scanAll 缓存、
@@ -102,12 +103,20 @@
     } catch (e) {}
 
     // ---------- 1. 自动点击大饼干 ----------
-    var clickTimer = setInterval(function () {
-      try {
-        var el = document.getElementById('bigCookie');
-        if (el) { Game.lastClick -= 1000; el.click(); }
-      } catch (e) {}
-    }, CFG.clickIntervalMs);
+    var clickTimer = null;
+    function startClicker() {
+      if (clickTimer) clearInterval(clickTimer);
+      clickTimer = setInterval(function () {
+        try {
+          var el = document.getElementById('bigCookie');
+          if (el) { Game.lastClick -= 1000; el.click(); }
+        } catch (e) {}
+      }, CFG.clickIntervalMs);
+    }
+    function stopClicker() {
+      if (clickTimer) { clearInterval(clickTimer); clickTimer = null; }
+    }
+    startClicker();
 
     // ---------- 2. 候选扫描：全体候选，按修正 pp 升序 + 全体均值 ----------
     function scanAll() {
@@ -234,6 +243,7 @@
     }
     function updateModeBtn() {
       if (!modeBtn) return;
+      modeBtn.style.opacity = enabled ? '1' : '0.45'; // 总开关关闭时置灰
       if (CFG.mode === 'strict') {
         modeBtn.textContent = '攒钱';
         modeBtn.style.background = '#2d8a3e';
@@ -249,9 +259,59 @@
       }
     }
 
+    // ---------- 4b. 总开关（控制全部自动化功能；后续连招开发模块在其关闭时运行） ----------
+    var enabled = true;
+    var masterBtn = null;
+
+    function setEnabled(on) {
+      on = !!on;
+      if (on === enabled) return;
+      enabled = on;
+      if (enabled) {
+        startClicker();
+        schedule();
+      } else {
+        if (tickTimer) { clearTimeout(tickTimer); tickTimer = null; }
+        stopClicker();
+      }
+      updateMasterBtn();
+      updateModeBtn();
+      console.log('[AutoPilot] 总开关：' + (enabled ? '开启（全部功能运行）' : '关闭（连点/金饼干/购买/嬤虫/连招检测全部暂停）'));
+      try {
+        if (Game.Notify) Game.Notify('AutoPilot 总开关', enabled ? '全部功能已开启' : '全部自动化已暂停');
+      } catch (e) {}
+    }
+
+    function createMasterBtn() {
+      masterBtn = document.createElement('div');
+      masterBtn.id = 'cookie-autopilot-master-btn';
+      masterBtn.style.cssText = 'position:fixed;top:10px;right:82px;z-index:99999;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,0.3);user-select:none;';
+      updateMasterBtn();
+      masterBtn.onclick = function () {
+        setEnabled(!enabled);
+      };
+      document.body.appendChild(masterBtn);
+    }
+    function updateMasterBtn() {
+      if (!masterBtn) return;
+      if (enabled) {
+        masterBtn.textContent = '运行中';
+        masterBtn.style.background = '#7c3aed';
+      } else {
+        masterBtn.textContent = '已关闭';
+        masterBtn.style.background = '#6b7280';
+      }
+    }
+    function removeMasterBtn() {
+      if (masterBtn && masterBtn.parentNode) {
+        masterBtn.parentNode.removeChild(masterBtn);
+        masterBtn = null;
+      }
+    }
+
     // ---------- 5. 主循环（固定节拍） ----------
     function tick() {
-      if (stopped) return;
+      if (stopped || !enabled) return;
       try {
         // --- 黄金饼干 / 红饼干 / 驯鹿：出现即点 ---
         var shimmers = Game.shimmers;
@@ -311,7 +371,7 @@
     }
 
     function schedule() {
-      if (stopped) return;
+      if (stopped || !enabled) return;
       tickTimer = setTimeout(tick, CFG.tickMs);
     }
 
@@ -395,14 +455,17 @@
       stop: function () {
         stopped = true;
         if (tickTimer) clearTimeout(tickTimer);
-        clearInterval(clickTimer);
+        stopClicker();
         removeModeBtn();
+        removeMasterBtn();
         if (bootTimer) clearInterval(bootTimer);
         if (window.__origPlaySound) window.PlaySound = window.__origPlaySound;
         delete window.CookieAutoPilot;
         console.log('[AutoPilot] 已停止。');
       },
       config: CFG,
+      setEnabled: setEnabled,
+      isEnabled: function () { return enabled; },
       stats: function () {
         var lastBuy = buyCount > 0 ? buyTimes[(buyIdx - 1 + BUY_BUF_SIZE) % BUY_BUF_SIZE] : null;
         return {
@@ -430,10 +493,11 @@
     };
 
     createModeBtn();
+    createMasterBtn();
 
-    console.log('[AutoPilot v5.1.7] 已启动 ✔ 模式=' + CFG.mode + ' | 点击右上角按钮或输入 CookieAutoPilot.setMode("strict"/"fast") 切换 | 停止请输入 CookieAutoPilot.stop()');
+    console.log('[AutoPilot v5.1.8] 已启动 ✔ 模式=' + CFG.mode + ' | 右上角：紫色按钮=总开关，绿/蓝按钮=切换模式 | 控制台：CookieAutoPilot.setEnabled(true/false) / .stop()');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.1.7 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道'));
+      if (Game.Notify) Game.Notify('AutoPilot v5.1.8 已启动', '模式：' + (CFG.mode === 'strict' ? '严格全局最优（攒钱）' : 'pp 均值快道') + ' | 总开关：运行中');
     } catch (e) {}
   }
 })();
