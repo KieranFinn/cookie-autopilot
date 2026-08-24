@@ -1,5 +1,5 @@
 /* ============================================================
- * Cookie AutoPilot v5.11.1 — Cookie Clicker 网页版全自动脚本（精简版）
+ * Cookie AutoPilot v5.11.2 — Cookie Clicker 网页版全自动脚本（精简版）
  * 适用版本：网页版 v2.05x（依赖 Cookie Monster 的 pp 数据）
  * 用法：打开游戏 → F12 控制台 → 粘贴本文件全部内容 → 回车
  * 停止：控制台输入 CookieAutoPilot.stop()
@@ -7,6 +7,8 @@
  *   strict（默认）—— 只买全体候选中修正 pp 最低项，买不起就等；
  *   fast —— 修正 pp ≤ 全体均值且买得起就连环买（v4.9.6 快道）。
  *   切换：点击屏幕右上角浮动按钮，或控制台 CookieAutoPilot.setMode('strict'|'fast')
+ * v5.11.2：修复启动弹窗/控制台横幅仍显示旧版本号（v5.10.0/v5.11.0）的问题，
+ *          统一为当前版本 v5.11.2
  * v5.11.1：修复卡7飞升的威望口径 bug——cookiesReset 只是「历史总烘焙」（上次转世时
  *          才更新），必须加上 cookiesEarned（本次运行）才是飞升后的真实威望；
  *          此前读数偏小甚至恒为 0，可能错过或错误触发（对照 main.js 16936 修正）
@@ -2145,9 +2147,9 @@
     createCpsBtn();
     createFthofBtn();
 
-    console.log('[AutoPilot v5.11.0] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：卡7飞升/终极爆发/刷金/刷哥斯马克，紫=总开关，绿/蓝=模式');
+    console.log('[AutoPilot v5.11.1] 已启动 ✔ 模式=' + CFG.mode + ' | 左上：CpS=增益明细，命运=FtHoF 两发预测+刷序列，花园=自动育种 | 右上：卡7飞升/终极爆发/刷金/刷哥斯马克，紫=总开关，绿/蓝=模式');
     try {
-      if (Game.Notify) Game.Notify('AutoPilot v5.10.0 已启动', '新增：终极爆发按钮（黄金开关+糖狂潮+三连贷+延长 buff，延长法术带成败预测）');
+      if (Game.Notify) Game.Notify('AutoPilot v5.11.1 已启动', '新增：卡7飞升按钮（威望含 4 个 7 自动锁定飞升）+ 终极爆发 + 刷哥斯马克叠层');
     } catch (e) {}
   }
 })();
